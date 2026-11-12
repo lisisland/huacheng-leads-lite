@@ -1,0 +1,911 @@
+export type AgentOperationRisk = "read" | "write" | "external";
+export type AgentAuthorizationPolicy =
+  | "read_only"
+  | "direct_user_intent"
+  | "explicit_confirmation"
+  | "frozen_payload_confirmation";
+
+export interface AgentCompletionEvidence {
+  type: "response" | "created_object_id" | "deleted_object";
+  responsePaths?: string[];
+  description: string;
+}
+
+export interface AgentOperationContract {
+  version: "1.0";
+  method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+  path: string;
+  operation: string;
+  entity: string;
+  intentExamples: string[];
+  requestSchema: Record<string, unknown> | null;
+  risk: AgentOperationRisk;
+  authorizationPolicy: AgentAuthorizationPolicy;
+  completionEvidence: AgentCompletionEvidence;
+  refreshView: string;
+  guidance: string;
+  schemaSource: "registry" | "openapi" | "none";
+  executable: boolean;
+}
+
+interface AgentApiBusinessContract {
+  schema: Record<string, unknown>;
+  guidance: string;
+}
+
+type JsonSchema = Record<string, unknown>;
+
+const string = (options: JsonSchema = {}): JsonSchema => ({ type: "string", ...options });
+const number = (options: JsonSchema = {}): JsonSchema => ({ type: "number", ...options });
+const integer = (options: JsonSchema = {}): JsonSchema => ({ type: "integer", ...options });
+const boolean = (options: JsonSchema = {}): JsonSchema => ({ type: "boolean", ...options });
+const array = (items: JsonSchema, options: JsonSchema = {}): JsonSchema => ({ type: "array", items, ...options });
+const oneOf = (...values: string[]): JsonSchema => ({ type: "string", enum: values });
+
+const objectSchema = (required: string[], properties: Record<string, JsonSchema>): JsonSchema => ({
+  type: "object",
+  required,
+  properties,
+  additionalProperties: false
+});
+
+const emptySchema = objectSchema([], {});
+const reasonSchema = objectSchema([], { reason: string({ maxLength: 1000, default: "" }) });
+const idsSchema = objectSchema(["ids"], { ids: array(string({ minLength: 1 }), { minItems: 1, maxItems: 200 }) });
+const hitIdsSchema = objectSchema(["hitIds"], {
+  hitIds: array(string({ minLength: 1, maxLength: 100, pattern: "^[A-Za-z0-9._:-]+$" }), { minItems: 1, maxItems: 200 })
+});
+
+const customerFields: Record<string, JsonSchema> = {
+  company: string({ minLength: 1 }),
+  country: string({ minLength: 1, default: "未知" }),
+  contact: string({ minLength: 1, default: "待维护" }),
+  whatsapp: string({ pattern: "^\\+[1-9]\\d{6,14}$|^$", default: "", description: "没有真实号码时必须留空" }),
+  stage: string({ minLength: 1, default: "询盘" }),
+  amount: integer({ minimum: 0, default: 0 }),
+  health: integer({ minimum: 0, maximum: 100, default: 72 }),
+  grade: oneOf("A", "B", "C", "D"),
+  nextReminder: string({ minLength: 1 }),
+  wecomBound: boolean(),
+  billingName: string({ default: "" }),
+  billingAddress: string({ default: "" }),
+  documentContact: string({ default: "" }),
+  phone: string({ default: "" }),
+  email: string({ default: "" }),
+  website: string({ default: "" }),
+  defaultPortDischarge: string({ default: "" }),
+  defaultIncoterm: string({ default: "" }),
+  defaultPaymentTerm: string({ default: "" })
+};
+
+const leadFields: Record<string, JsonSchema> = {
+  company: string({ minLength: 1 }), contact: string({ default: "" }), country: string({ default: "" }),
+  email: string({ default: "" }), phone: string({ default: "" }), wechat: string({ default: "" }),
+  source: string({ default: "手动录入" }), intent: oneOf("高", "中", "低"), stage: string({ default: "新线索" }),
+  estimatedAmount: number({ minimum: 0, default: 0 }), nextFollowAt: string({ default: "" }), remark: string({ default: "" }), inquiryContent: string({ default: "", maxLength: 20000 }),
+  sourceType: oneOf("outbound", "inbound", "offline", "referral", "import"), sourceChannel: string({ default: "manual", maxLength: 80 }),
+  sourceCampaign: string({ default: "", maxLength: 120 }), externalId: string({ default: "", maxLength: 180 }), sourceUrl: string({ default: "", maxLength: 500 })
+};
+
+const dealFields: Record<string, JsonSchema> = {
+  customerId: string({ minLength: 1 }), title: string({ minLength: 1 }), product: string({ minLength: 1, maxLength: 200 }),
+  quantity: integer({ minimum: 0, default: 0 }), unitPrice: number({ minimum: 0, default: 0 }), amount: number({ minimum: 0 }),
+  items: array(objectSchema(["product", "quantity", "unitPrice"], { id: string({ maxLength: 64 }), productId: string({ maxLength: 64 }), product: string({ minLength: 1, maxLength: 500 }), model: string({ maxLength: 200 }), quantity: number({ minimum: 0 }), unitPrice: number({ minimum: 0 }) }), { minItems: 1, maxItems: 50 }),
+  currency: string({ pattern: "^[A-Z]{3}$", default: "USD" }), nextAction: string({ minLength: 1 }), nextActionAt: string({ minLength: 1 }),
+  expectedCloseAt: string({ default: "" }), recommendationId: string({ default: "", maxLength: 90 })
+};
+
+const todoFields: Record<string, JsonSchema> = {
+  title: string({ minLength: 1 }), type: oneOf("customer", "knowledge", "exam", "ocr", "other"),
+  priority: oneOf("high", "medium", "normal"), dueAt: string({ default: "" }), related: string({ default: "" }),
+  done: boolean(), status: oneOf("pending", "in_progress"), pinState: oneOf("top", "bottom", ""), sortOrder: number(),
+  historyAt: string(), snoozeReason: string({ maxLength: 255 }), completionResult: string({ maxLength: 255 })
+};
+
+const planTaskFields: Record<string, JsonSchema> = {
+  title: string({ minLength: 1 }), phase: string({ minLength: 1, default: "计划任务" }), category: string({ minLength: 1, default: "客户开发" }),
+  priority: oneOf("high", "medium", "normal"), status: oneOf("planned", "active"), dueAt: string({ pattern: "^$|^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}$" }),
+  target: string(), description: string(), customerId: string(), leadId: string(), dealId: string()
+};
+
+const planTemplateFields: Record<string, JsonSchema> = {
+  section: oneOf("knowledge", "persona", "execution"), title: string({ minLength: 1 }), summary: string(), output: string(), badge: string(), badgeTone: string(),
+  phase: string({ minLength: 1 }), category: string({ minLength: 1 }), priority: oneOf("high", "medium", "normal"), target: string(), description: string(), sortOrder: integer()
+};
+
+const memoryFields: Record<string, JsonSchema> = {
+  type: oneOf("user_preference", "company_knowledge", "customer_memory", "team_playbook"), scope: oneOf("personal", "team", "customer", "company"),
+  subjectId: string({ maxLength: 120 }), title: string({ minLength: 2, maxLength: 120 }), content: string({ minLength: 2, maxLength: 2000 }),
+  sourceType: oneOf("crm", "manual", "agent", "playbook"), sourceId: string({ maxLength: 160 }), confidence: integer({ minimum: 0, maximum: 100 }), expiresAt: string({ maxLength: 40 })
+};
+
+const knowledgeFields: Record<string, JsonSchema> = {
+  kind: oneOf("module", "workflow", "policy", "field", "playbook", "failure_case"), scope: oneOf("team", "company"), module: string({ minLength: 2, maxLength: 80 }),
+  title: string({ minLength: 2, maxLength: 160 }), summary: string({ minLength: 2, maxLength: 500 }), content: string({ minLength: 10, maxLength: 8000 }),
+  keywords: array(string({ minLength: 1, maxLength: 80 }), { maxItems: 40 }), permissionCodes: array(string({ minLength: 3, maxLength: 120 }), { minItems: 1, maxItems: 30 }),
+  toolRefs: array(string({ minLength: 2, maxLength: 120 }), { maxItems: 40 }), successCriteria: array(string({ minLength: 2, maxLength: 300 }), { maxItems: 20 }),
+  failureCases: array(string({ minLength: 2, maxLength: 300 }), { maxItems: 20 }), sourceType: oneOf("manual", "agent_feedback"), sourceId: string({ maxLength: 160 })
+};
+
+const skillResourceFields: Record<string, JsonSchema> = {
+  name: string({ minLength: 1, maxLength: 160 }), category: string({ minLength: 1, maxLength: 100 }),
+  version: string({ minLength: 1, maxLength: 40 }), summary: string({ minLength: 1, maxLength: 1200 }),
+  usageGuide: string({ maxLength: 8000 }), trainingGuide: string({ maxLength: 12000 }),
+  optimizationAdvice: string({ maxLength: 12000 }), acquisitionInstructions: string({ maxLength: 4000 }),
+  downloadUrl: string({ format: "uri", maxLength: 2048 }), extractionCode: string({ maxLength: 64 }),
+  tags: array(string({ minLength: 1, maxLength: 60 }), { maxItems: 30 }), author: string({ maxLength: 120 }),
+  license: string({ maxLength: 120 })
+};
+
+const triggerFields: Record<string, JsonSchema> = {
+  name: string({ minLength: 2, maxLength: 120 }),
+  eventType: oneOf("lead_overdue", "customer_reply", "stalled_deal", "next_action_due", "health_decline", "communication_unread", "prospect_completed"),
+  mode: oneOf("notify", "internal", "approval"), intervalMinutes: integer({ minimum: 5, maximum: 10080 }), thresholdDays: integer({ minimum: 1, maximum: 180 }),
+  healthBelow: integer({ minimum: 0, maximum: 100 }), maxPerScan: integer({ minimum: 1, maximum: 20 })
+};
+
+const productFields: Record<string, JsonSchema> = {
+  id: string({ minLength: 1, maxLength: 64 }),
+  nameZh: string({ minLength: 1, maxLength: 200 }),
+  nameEn: string({ maxLength: 200 }),
+  model: string({ maxLength: 200 }),
+  category: string({ maxLength: 80 }),
+  unit: string({ maxLength: 20 }),
+  price: number({ minimum: 0 }),
+  currency: string({ minLength: 1, maxLength: 10 }),
+  hsCode: string({ maxLength: 40 }),
+  descriptionZh: string({ maxLength: 4000 }),
+  descriptionEn: string({ maxLength: 4000 }),
+  tags: array(string({ maxLength: 60 }), { maxItems: 30 }),
+  imageUrl: string({ maxLength: 512 })
+};
+
+const shipmentItemSchema = objectSchema([], {
+  id: string({ minLength: 1, maxLength: 120 }),
+  productName: string({ maxLength: 200 }),
+  model: string({ maxLength: 200 }),
+  hsCode: string({ maxLength: 40 }),
+  quantity: number({ minimum: 0 }),
+  unit: string({ maxLength: 20 }),
+  netWeight: number({ minimum: 0 }),
+  grossWeight: number({ minimum: 0 }),
+  length: number({ minimum: 0 }),
+  width: number({ minimum: 0 }),
+  height: number({ minimum: 0 }),
+  volume: number({ minimum: 0 }),
+  note: string({ maxLength: 500 })
+});
+
+const shipmentFields: Record<string, JsonSchema> = {
+  id: string({ minLength: 1, maxLength: 64 }),
+  shipmentNo: string({ maxLength: 80 }),
+  dealId: string({ maxLength: 64 }),
+  dealTitle: string({ maxLength: 200 }),
+  customerName: string({ maxLength: 200 }),
+  courier: string({ maxLength: 40 }),
+  trackingCode: string({ maxLength: 120 }),
+  trackingImageUrl: string({ maxLength: 512 }),
+  status: oneOf("draft", "shipped", "in_transit", "delivered", "exception"),
+  shippedAt: string({ maxLength: 40 }),
+  estimatedArrival: string({ maxLength: 40 }),
+  note: string({ maxLength: 4000 }),
+  items: array(shipmentItemSchema, { maxItems: 100 })
+};
+
+const registry: Record<string, AgentApiBusinessContract> = {};
+const define = (key: string, schema: JsonSchema, guidance: string) => { registry[key] = { schema, guidance }; };
+const defineMany = (keys: string[], schema: JsonSchema, guidance: string) => keys.forEach((key) => define(key, schema, guidance));
+
+define("POST /api/customers", objectSchema(["company"], customerFields), "创建客户。用户允许补齐时只能使用明确的待维护默认值，不得编造真实联系方式；响应 customer.id 是完成证据。");
+define("PATCH /api/customers/{id}", objectSchema([], customerFields), "更新当前账号有写权限的客户；只提交用户要求修改的字段。");
+define("POST /api/customers/{id}/release", objectSchema(["reason"], { reason: string({ minLength: 2, maxLength: 500 }), expectedVersion: integer({ minimum: 0 }) }), "释放客户到公池；必须说明原因并再次确认。");
+define("POST /api/customers/{id}/claim", objectSchema([], { expectedVersion: integer({ minimum: 0 }) }), "领取公池客户；使用列表返回的真实客户 ID 和版本。");
+define("POST /api/customers/bulk-delete", idsSchema, "批量删除客户会连带清理关联数据，必须展示完整 ID 清单并单独确认。");
+define("POST /api/customers/{id}/activities", objectSchema(["type", "content"], { type: oneOf("call", "email", "whatsapp", "wechat", "meeting", "note"), content: string({ minLength: 1, maxLength: 2000 }), nextReminder: string({ maxLength: 100 }) }), "记录真实客户跟进；响应 activity.id 是写入证据。");
+define("POST /api/customers/{id}/meeting-notes", objectSchema(["transcript"], {
+  transcript: string({ minLength: 1, maxLength: 50_000 })
+}), "把用户确认的会议转写发送给已配置的 AI 生成纪要，并写入客户跟进及待办；只能提交原始转写内容。");
+define("POST /api/customer-intelligence/{id}/accept", objectSchema([], { selectedFields: array(oneOf("company", "country", "contact", "documentContact"), { maxItems: 4 }) }), "采纳客户情报建议，只能选择人工确认过的字段。");
+define("POST /api/customer-intelligence/{id}/reject", reasonSchema, "拒绝客户情报建议，可记录原因。");
+define("POST /api/customers/intake/files", emptySchema, "把用户明确选择的客户资料文件（名片/合同/邮件/表格）暂存到本机 Runner 授权目录，供后续识别；这是二进制上传接口，文件内容由用户上传流程提供，Agent 不得伪造文件内容，也不得凭文件名推断字段。");
+define("POST /api/customers/intake/analyze", objectSchema(["fileIds"], {
+  fileIds: array(string({ minLength: 4, maxLength: 80 }), { minItems: 1, maxItems: 3 })
+}), "识别用户已暂存的客户资料文件并把字段回填到新增客户表单；只能引用用户刚上传、尚未过期的暂存文件，识别结果必须由人工核对后再保存客户。");
+
+define("POST /api/leads", objectSchema(["company"], leadFields), "创建线索。未知联系资料保持空值；响应 lead.id 或 duplicate 是完成证据。");
+define("POST /api/leads/ingest", objectSchema(["company"], { ...leadFields, occurredAt: string({ format: "date-time" }), rawPayload: {} }), "从可信来源写入线索并保留来源事件；不得伪造来源载荷。");
+define("PATCH /api/leads/{id}", objectSchema([], { ...leadFields, status: oneOf("new", "following", "converted", "invalid") }), "更新当前账号可见线索，只提交需要变更的字段。");
+define("DELETE /api/leads/{id}", objectSchema([], { reason: string({ default: "" }) }), "把线索移入垃圾箱；已生成的客户和商机继续保留，已转客户线索不得永久删除。");
+defineMany(["POST /api/leads/{id}/restore", "DELETE /api/leads/{id}/permanent"], emptySchema, "恢复或永久删除线索；永久删除必须单独确认。");
+define("POST /api/leads/{id}/activities", objectSchema(["content"], { type: oneOf("call", "wechat", "whatsapp", "linkedin", "email", "meeting", "note"), content: string({ minLength: 1 }), nextFollowAt: string() }), "记录线索跟进并核验 activity.id。");
+define("POST /api/leads/{id}/social-touch", objectSchema(["channel", "message"], { channel: oneOf("call", "wechat", "whatsapp", "linkedin"), message: string({ minLength: 1, maxLength: 1200 }), nextFollowAt: string() }), "只记录社媒触达结果，不代表系统真实发送消息。");
+define("POST /api/leads/{id}/send-email", objectSchema(["to", "subject", "body"], { to: string({ format: "email" }), subject: string({ minLength: 1, maxLength: 160 }), body: string({ minLength: 10, maxLength: 3000 }), nextFollowAt: string() }), "真实发送开发邮件；收件人、主题和完整正文冻结后确认。");
+define("POST /api/leads/{id}/convert", objectSchema([], { customerMode: oneOf("create", "existing"), customerId: string(), createDeal: boolean(), deal: { type: "object", additionalProperties: false, properties: { title: string({ maxLength: 200 }), product: string({ maxLength: 200 }), amount: number({ minimum: 0 }), quantity: integer({ minimum: 0 }), unitPrice: number({ minimum: 0 }), nextAction: string({ maxLength: 200 }) } } }), "将线索转为新客户或关联现有客户；创建商机时必须使用用户确认的信息。");
+
+define("POST /api/deals", objectSchema(["customerId", "title", "product", "nextAction", "nextActionAt"], dealFields), "创建商机。必须使用真实可写 customerId；产品、下一动作和时间不能替用户臆造。");
+define("PATCH /api/deals/{id}", objectSchema(["customerId", "title", "product", "nextAction", "nextActionAt"], dealFields), "编辑商机基础信息；服务端会重新计算金额。");
+define("PATCH /api/deals/{id}/stage", objectSchema(["stage", "result", "nextAction", "nextActionAt"], { stage: oneOf("询盘", "已联系", "已报价", "样品", "谈判", "成交", "丢单"), result: string({ minLength: 1, maxLength: 2000 }), nextAction: string({ minLength: 1, maxLength: 200 }), nextActionAt: string({ minLength: 1 }), expectedCloseAt: string(), transitionReason: string(), wonReason: string() }), "推进商机阶段；跨阶段、回退和成交需要对应业务依据。");
+define("POST /api/deals/{id}/events", objectSchema(["type", "content", "nextAction", "nextActionAt"], { type: oneOf("follow_up", "quote", "sample", "negotiation", "payment"), content: string({ minLength: 1, maxLength: 2000 }), nextAction: string({ minLength: 1, maxLength: 200 }), nextActionAt: string({ minLength: 1 }) }), "记录商机进展，并同步下一动作。");
+define("POST /api/deals/{id}/archive", emptySchema, "只有已成交商机可以归档。");
+define("POST /api/deals/{id}/lost", objectSchema(["category", "reason"], { category: string({ minLength: 1, maxLength: 80 }), reason: string({ minLength: 1, maxLength: 2000 }), revisitAt: string() }), "标记丢单并记录真实原因；该动作需要明确确认。");
+
+define("POST /api/todos", objectSchema(["title"], todoFields), "创建当前账号待办；未指定日期时 dueAt 留空。");
+define("PATCH /api/todos/{id}", objectSchema([], todoFields), "更新当前账号待办，只提交需要变更的字段。");
+define("POST /api/todos/{id}/complete", objectSchema([], { completionResult: string({ maxLength: 255 }) }), "完成待办；规则提醒必须填写处理结果。");
+defineMany(["POST /api/todos/archive-due", "POST /api/todos/{id}/restore", "DELETE /api/todos/{id}"], emptySchema, "执行待办归档、恢复或删除动作；删除需要明确确认。");
+define("POST /api/todos/reorder", objectSchema(["ids"], { ids: array(string(), { minItems: 1 }), mode: oneOf("manual", "top", "bottom"), targetId: string() }), "调整本人待办排序。");
+
+define("POST /api/plan-tasks", objectSchema(["title"], planTaskFields), "创建执行计划任务；关联对象 ID 必须来自当前账号可见数据。");
+define("PATCH /api/plan-tasks/{id}", objectSchema([], planTaskFields), "编辑执行计划任务。");
+define("POST /api/plan-tasks/{id}/complete", objectSchema(["result"], { result: string({ minLength: 1, maxLength: 2000 }) }), "完成计划任务并记录实际结果。");
+define("POST /api/plan-tasks/{id}/cancel", objectSchema(["reason"], { reason: string({ minLength: 1, maxLength: 1000 }) }), "取消计划任务并记录原因。");
+define("POST /api/plan-tasks/{id}/reschedule", objectSchema(["dueAt"], { dueAt: string({ pattern: "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}$" }), reason: string({ maxLength: 500 }) }), "调整计划时间并保留原因。");
+define("DELETE /api/plan-tasks/{id}", emptySchema, "永久删除计划任务，需要明确确认。");
+define("POST /api/plan-templates", objectSchema(["title"], planTemplateFields), "创建本人计划模板。");
+define("PATCH /api/plan-templates/{id}", objectSchema([], planTemplateFields), "编辑本人计划模板。");
+define("DELETE /api/plan-templates/{id}", emptySchema, "删除本人计划模板，需要明确确认。");
+
+define("POST /api/problems", objectSchema(["title"], { title: string({ minLength: 1 }), category: string(), severity: oneOf("high", "medium", "low"), status: oneOf("open", "solving", "resolved"), relatedCustomer: string(), rootCause: string(), solution: string(), nextAction: string(), dueAt: string() }), "创建业务问题记录。");
+define("PATCH /api/problems/{id}", objectSchema([], { title: string({ minLength: 1 }), category: string(), severity: oneOf("high", "medium", "low"), status: oneOf("open", "solving", "resolved"), relatedCustomer: string(), rootCause: string(), solution: string(), nextAction: string(), dueAt: string() }), "编辑当前账号有权管理的问题记录。");
+define("PATCH /api/problems/{id}/status", objectSchema(["status"], { status: oneOf("open", "solving", "resolved") }), "更新业务问题状态。");
+define("DELETE /api/problems/{id}", emptySchema, "永久删除当前账号有权管理的问题记录，需要明确确认。");
+define("POST /api/memos", objectSchema(["title"], { title: string({ minLength: 1 }), content: string(), category: string({ minLength: 1 }), tags: string(), customerId: string(), dealId: string(), pinned: boolean() }), "创建备忘录；关联 ID 必须真实可见。");
+define("PATCH /api/memos/{id}", objectSchema([], { title: string({ minLength: 1 }), content: string(), category: string({ minLength: 1 }), tags: string(), customerId: string(), dealId: string(), pinned: boolean(), archived: boolean() }), "编辑备忘录。");
+defineMany(["DELETE /api/memos/{id}", "POST /api/memos/{id}/restore", "DELETE /api/memos/{id}/permanent"], emptySchema, "执行备忘录删除、恢复或永久删除；永久删除需要明确确认。");
+
+define("POST /api/competitors", objectSchema(["company"], { company: string({ minLength: 1 }), country: string(), segment: string(), threatLevel: oneOf("high", "medium", "low"), website: string(), strengths: string(), weaknesses: string(), competingProducts: string(), ourStrategy: string() }), "创建竞品档案，只使用有依据的信息。");
+define("PATCH /api/competitors/{id}/threat", objectSchema(["threatLevel"], { threatLevel: oneOf("high", "medium", "low") }), "更新竞品威胁等级。");
+define("POST /api/case-studies", objectSchema(["title"], { title: string({ minLength: 1 }), customer: string(), country: string(), product: string(), industry: string(), result: string(), story: string(), reusablePoints: string(), status: oneOf("draft", "published") }), "创建案例，禁止编造客户结果。");
+defineMany(["PATCH /api/case-studies/{id}/publish", "PATCH /api/knowledge/assets/{id}/publish"], emptySchema, "发布内容；服务端按当前角色复核权限。");
+const knowledgeAssetFields: Record<string, JsonSchema> = { title: string({ minLength: 1, maxLength: 200 }), category: string({ minLength: 1, maxLength: 100 }), version: string({ minLength: 1, maxLength: 40 }), sourceUrl: string({ format: "uri", maxLength: 2048 }), shareCode: string({ maxLength: 64 }), fileType: oneOf("pdf", "word", "excel", "image", "video", "archive", "link", "other"), description: string({ maxLength: 2000 }), tags: array(string({ minLength: 1, maxLength: 60 }), { maxItems: 30 }) };
+define("POST /api/knowledge/assets", objectSchema(["title", "sourceUrl"], knowledgeAssetFields), "创建 URL 资料记录；只接受 HTTPS，百度分享链接可附提取码。");
+define("PATCH /api/knowledge/assets/{id}", objectSchema([], knowledgeAssetFields), "编辑本人或管理范围内的资料元数据和访问 URL。");
+define("POST /api/knowledge/assets/{id}/access", emptySchema, "获取当前账号可见资料的外部访问地址并记录一次访问。");
+define("DELETE /api/knowledge/assets/{id}", emptySchema, "删除本人或管理范围内的资料记录，需要明确确认。");
+
+define("POST /api/daily-reports", objectSchema(["reportDate", "completedWork"], { reportDate: string({ pattern: "^\\d{4}-\\d{2}-\\d{2}$" }), completedWork: string({ minLength: 1, maxLength: 5000 }), customerProgress: string({ maxLength: 5000 }), results: string({ maxLength: 5000 }), risks: string({ maxLength: 5000 }), nextPlan: string({ maxLength: 5000 }), supportNeeded: string({ maxLength: 5000 }) }), "提交或更新本人的业务日报。");
+define("POST /api/daily-reports/{id}/comments", objectSchema(["content"], { content: string({ minLength: 1, maxLength: 2000 }), parentId: string({ maxLength: 64 }) }), "评论可见日报。");
+define("POST /api/internal-messages", objectSchema(["recipientId", "subject", "content"], { recipientId: string({ minLength: 1, maxLength: 64 }), subject: string({ minLength: 1, maxLength: 180 }), content: string({ minLength: 1, maxLength: 5000 }), threadId: string({ maxLength: 64 }) }), "发送站内消息也属于对他人的外部副作用，必须确认收件人和完整内容。");
+define("POST /api/internal-messages/system", objectSchema(["subject", "content"], { subject: string({ minLength: 1, maxLength: 180 }), content: string({ minLength: 1, maxLength: 5000 }), relatedId: string({ maxLength: 128 }), idempotencyKey: string({ minLength: 1, maxLength: 256 }) }), "向当前登录用户写入系统通知；只能使用当前用户上下文，响应 message.id 是完成证据。");
+define("POST /api/internal-messages/{id}/read", emptySchema, "将本人收到的站内消息标记已读。");
+define("POST /api/internal-messages/read-all", emptySchema, "将本人收到的全部站内消息标记已读；只影响当前用户自己的收件箱。");
+
+define("PUT /api/company-profile", objectSchema([], { companyName: string({ maxLength: 200 }), website: string({ maxLength: 300 }), productSummary: string({ maxLength: 2000 }), address: string({ maxLength: 1000 }), phone: string({ maxLength: 100 }), email: string({ maxLength: 180 }) }), "维护团队公司资料，仅管理员可执行。");
+define("PUT /api/email-tracking/config", objectSchema([], { baseUrl: string({ maxLength: 300 }) }), "配置开发信已读追踪的公网地址（留空 = 关闭追踪）；写库并立即生效，生产环境要求 https。");
+define("PUT /api/system-settings", objectSchema(["requireDocumentExcelApproval"], { requireDocumentExcelApproval: boolean() }), "维护当前团队的系统设置，仅具备系统设置权限的管理员可执行。");
+define("PUT /api/system-settings/ocr", objectSchema([], { provider: oneOf("none", "baidu", "siliconflow"), enabled: boolean(), apiKey: string({ maxLength: 400 }), secretKey: string({ maxLength: 400 }), model: string({ maxLength: 160 }), baseUrl: string({ maxLength: 255 }) }), "维护单证 OCR 供应商配置，仅具备系统设置权限的管理员可执行。");
+define("POST /api/ai-background-research", objectSchema(["entityType", "entityId"], { entityType: oneOf("lead", "customer", "prospect"), entityId: string({ minLength: 1, maxLength: 120 }), source: oneOf("crm", "ai", "cli"), runnerId: string({ maxLength: 80 }) }), "执行客户、线索或搜客候选背调，可能访问外部来源，必须确认目标对象。source 省略时用团队「默认背调来源」；source=cli 表示交给本机已配对的 CLI 联网调研，此时本机必须先有一台在线 Runner。");
+define("PUT /api/ai-engine/settings", objectSchema([], { researchSource: oneOf("crm", "ai", "cli"), emailSource: oneOf("template", "ai", "cli"), cliAdapter: oneOf("workbuddy", "codex"), cliWorkspace: string({ maxLength: 1000 }), cliTimeoutSeconds: integer({ minimum: 60, maximum: 86400 }), runnerId: string({ maxLength: 80 }) }), "修改团队级的 AI 执行来源设置（默认背调来源、默认开发信来源、CLI 适配器/工作目录/超时）。这是团队共享配置，会改变其他人下次执行背调与开发信的默认引擎，必须确认后再提交。");
+define("POST /api/ai-engine/acquire", objectSchema([], { goal: string({ maxLength: 500 }), productKeywords: string({ maxLength: 300 }), countries: string({ maxLength: 200 }), industry: string({ maxLength: 200 }), customerType: string({ maxLength: 200 }), excludeKeywords: string({ maxLength: 200 }), limit: integer({ minimum: 1, maximum: 30 }), runnerId: string({ maxLength: 80 }) }), "用本机已配对的 CLI 按获客技能口径执行一次客户搜寻（只用公开来源、先核实再产出），结果自动同步进候选清单。goal、productKeywords、industry 至少填一项；响应里 acquisition.created 是实际新增的候选数量。");
+define("POST /api/tender-daily/run", objectSchema([], { force: boolean(), regions: string({ maxLength: 300 }), note: string({ maxLength: 500 }) }), "生成或取回当天的海外竞标日报：交给本机已配对的 CLI 联网检索公开招标/采购公告，按公司资料里的主营产品过滤。不带 force 时按天幂等——当天已有日报直接复用留档结果；force=true 才重新派一次 CLI 查询。");
+define("POST /api/development-email/draft", objectSchema(["entityType", "entityId"], { entityType: oneOf("lead", "customer", "prospect"), entityId: string({ minLength: 1, maxLength: 120 }), tone: oneOf("professional", "concise", "warm"), scenario: oneOf("first_touch", "daily_contact", "holiday_greeting", "new_product", "custom_goal"), goal: string({ maxLength: 1000 }), requireAi: boolean(), stage: oneOf("not_contacted", "first_touch_sent", "following_up", "replied_interested", "replied_negative", "bounced", "converted"), useResearch: boolean(), useAi: boolean(), source: oneOf("template", "ai", "cli"), runnerId: string({ maxLength: 80 }) }), "按当前开发阶段、收件人角色与已留档的背调结论生成开发信草稿；stage 省略时按客户实际阶段自动推导，明确拒绝/退信阶段直接拒绝生成。source 省略时用团队「默认开发信来源」；source=cli 表示交给本机已配对的 CLI 撰写。只出草稿，不发送。");
+define("POST /api/outreach-plans", objectSchema(["name"], {
+  name: string({ minLength: 1, maxLength: 120 }),
+  target: objectSchema([], {
+    countries: array(string({ minLength: 1, maxLength: 80 }), { maxItems: 20 }),
+    keyword: string({ maxLength: 120 }),
+    maxTargets: integer({ minimum: 1, maximum: 500 })
+  }),
+  policy: objectSchema([], {
+    dailyLimit: integer({ minimum: 1, maximum: 200 }),
+    stepIntervalHours: integer({ minimum: 1, maximum: 720 }),
+    sendWindowStartHour: integer({ minimum: 0, maximum: 23 }),
+    sendWindowEndHour: integer({ minimum: 1, maximum: 24 }),
+    stopOnReply: boolean(),
+    rotateMailboxEvery: integer({ minimum: 0, maximum: 1000 })
+  })
+}), "创建搜客开发方案：按国家与关键词筛选候选并生成开发信，方案由后台线程持续推进；实际投递前必须先冻结载荷并放行，不做无人值守群发。rotateMailboxEvery 表示每 N 封切换发件邮箱池里的下一个发件邮箱，0 为不轮换。");
+define("POST /api/outreach-plans/preview", objectSchema([], {
+  countries: array(string({ minLength: 1, maxLength: 80 }), { maxItems: 20 }),
+  keyword: string({ maxLength: 120 })
+}), "预检搜客开发方案在当前筛选条件下的命中候选与样例，只读不写入任何数据。");
+define("POST /api/outreach-plans/{id}/control", objectSchema(["action"], {
+  action: oneOf("pause", "resume", "stop")
+}), "暂停、继续或停止搜客开发方案；停止后该方案不再推进，也不会再生成新的发信批次。");
+define("DELETE /api/outreach-plans/{id}", emptySchema, "删除搜客开发方案；仅能删除自己名下、已停止的方案，需要明确确认。");
+define("POST /api/sender-mailboxes", objectSchema(["email", "smtpHost", "smtpUser", "smtpPassword"], {
+  label: string({ maxLength: 120 }),
+  email: string({ format: "email", maxLength: 200 }),
+  fromName: string({ maxLength: 120 }),
+  smtpHost: string({ minLength: 1, maxLength: 200 }),
+  smtpPort: integer({ minimum: 1, maximum: 65535 }),
+  smtpSecure: boolean(),
+  smtpUser: string({ minLength: 1, maxLength: 200 }),
+  smtpPassword: string({ minLength: 1, maxLength: 400 }),
+  imapHost: string({ maxLength: 200 }),
+  imapPort: integer({ minimum: 1, maximum: 65535 }),
+  imapUser: string({ maxLength: 200 }),
+  imapPassword: string({ maxLength: 400 }),
+  enabled: boolean()
+}), "向发件邮箱池登记一个 SMTP 发件邮箱（授权码加密落库，最多 10 个）；供自动发信方案按数量轮换发件身份。");
+define("PUT /api/sender-mailboxes/{id}", objectSchema(["email", "smtpHost", "smtpUser"], {
+  label: string({ maxLength: 120 }),
+  email: string({ format: "email", maxLength: 200 }),
+  fromName: string({ maxLength: 120 }),
+  smtpHost: string({ minLength: 1, maxLength: 200 }),
+  smtpPort: integer({ minimum: 1, maximum: 65535 }),
+  smtpSecure: boolean(),
+  smtpUser: string({ minLength: 1, maxLength: 200 }),
+  smtpPassword: string({ maxLength: 400 }),
+  imapHost: string({ maxLength: 200 }),
+  imapPort: integer({ minimum: 1, maximum: 65535 }),
+  imapUser: string({ maxLength: 200 }),
+  imapPassword: string({ maxLength: 400 }),
+  enabled: boolean()
+}), "更新发件邮箱池里自己名下的一个发件邮箱；smtpPassword 留空表示保留原授权码。");
+define("DELETE /api/sender-mailboxes/{id}", emptySchema, "从发件邮箱池删除自己名下的一个发件邮箱；删除不可撤销，需要明确确认。");
+define("POST /api/sender-mailboxes/{id}/test", objectSchema([], { to: string({ format: "email", maxLength: 255 }) }), "用发件邮箱池里的指定邮箱发一封测试邮件验证 SMTP 配置；默认发给该邮箱自己。");
+define("POST /api/outreach-journey/send", objectSchema(["entityType", "entityId", "requestId", "to", "subject", "body"], {
+  entityType: oneOf("customer", "lead", "prospect_candidate"),
+  entityId: string({ minLength: 1, maxLength: 120 }),
+  requestId: string({ minLength: 1, maxLength: 120 }),
+  to: string({ format: "email", maxLength: 255 }),
+  subject: string({ minLength: 1, maxLength: 300 }),
+  body: string({ minLength: 1, maxLength: 20000 })
+}), "按客户在发信明细里的当前开发阶段真实发送开发信；收件人、主题、正文必须冻结后确认。阶段为明确拒绝或退信时接口直接拒绝，不会投递。");
+define("DELETE /api/deals/{id}", emptySchema, "删除商机；只能删除自己可见的商机，且必须先解除关联单据，删除不可撤销，需要明确确认。");
+const peerContractFields: Record<string, JsonSchema> = {
+  company: string({ minLength: 1, maxLength: 200 }),
+  country: string({ maxLength: 80 }),
+  industry: string({ maxLength: 4000 }),
+  relations: array(oneOf("互补", "竞争", "互相推荐"), { maxItems: 3 }),
+  contact: string({ maxLength: 120 }),
+  phone: string({ maxLength: 80 }),
+  email: string({ maxLength: 160 }),
+  wechat: string({ maxLength: 80 }),
+  website: string({ maxLength: 255 }),
+  remark: string({ maxLength: 2000 }),
+  source: string({ maxLength: 120 })
+};
+define("POST /api/peers", objectSchema(["company"], peerContractFields), "新增同行（友商/渠道商）资料；公司名必填，重复公司名会被拒绝。");
+define("POST /api/peers/import", objectSchema(["peers"], {
+  peers: array(objectSchema(["company"], peerContractFields), { minItems: 1, maxItems: 500 }),
+  skipDuplicates: boolean()
+}), "批量导入同行资料，单次最多 500 条；skipDuplicates 决定重复公司名是跳过还是整体报错。");
+define("PATCH /api/peers/{id}", objectSchema([], peerContractFields), "修改自己名下同行的资料，只提交需要变更的字段。");
+define("DELETE /api/peers/{id}", emptySchema, "删除同行资料；只有归属人可以删除，需要明确确认。");
+define("POST /api/development-email/send", objectSchema(["entityType", "entityId", "to", "subject", "body"], { entityType: oneOf("lead", "customer", "prospect"), entityId: string({ minLength: 1, maxLength: 120 }), to: string({ format: "email" }), subject: string({ minLength: 1, maxLength: 160 }), body: string({ minLength: 10, maxLength: 6000 }), nextFollowAt: string({ maxLength: 100 }) }), "真实发送开发信；收件人、主题、正文必须冻结并确认。");
+define("POST /api/prospect-outreach-batches", objectSchema(["targetType"], {
+  targetType: oneOf("candidate", "lead"),
+  candidateIds: array(string({ minLength: 1, maxLength: 120 }), { minItems: 1, maxItems: 100 }),
+  leadIds: array(string({ minLength: 1, maxLength: 120 }), { minItems: 1, maxItems: 200 }),
+  policy: objectSchema([], {
+    dailyLimit: integer({ minimum: 1, maximum: 200 }),
+    stepIntervalHours: integer({ minimum: 1, maximum: 720 }),
+    sendWindowStartHour: integer({ minimum: 0, maximum: 23 }),
+    sendWindowEndHour: integer({ minimum: 1, maximum: 24 }),
+    stopOnReply: boolean()
+  })
+}), "为已批准可联系的候选（targetType=candidate）或有邮箱的线索（targetType=lead）生成发信批次草稿；生成后必须进入批次预览页由用户一次性冻结放行，不做无人值守群发。");
+define("POST /api/prospect-outreach-batches/{id}/approve", objectSchema([], {}), "冻结批次载荷并放行：重算资格、写入 frozenHash，之后批次内容不可再改。");
+define("POST /api/prospect-outreach-batches/{id}/items/{itemId}", objectSchema(["action"], { action: oneOf("remove", "restore", "edit"), stepIndex: integer({ minimum: 0, maximum: 9 }), subject: string({ minLength: 1, maxLength: 160 }), body: string({ minLength: 10, maxLength: 6000 }) }), "冻结前编辑批次项邮件内容（edit 需 stepIndex/subject/body），或移除/恢复批次中的候选；已冻结批次返回 409。");
+defineMany(["POST /api/prospect-outreach-batches/{id}/pause", "POST /api/prospect-outreach-batches/{id}/resume", "POST /api/prospect-outreach-batches/{id}/cancel"], emptySchema, "控制发信批次运行状态：暂停、继续或取消；取消后的批次不能再次放行。");
+define("POST /api/prospect-outreach-batches/{id}/{action}", emptySchema, "控制发信批次运行状态；路径 action 必须是 pause、resume 或 cancel，取消后的批次不能再次放行。");
+define("DELETE /api/prospect-outreach-batches/{id}", emptySchema, "删除草稿或已取消的发信批次；已放行的批次需先取消再删除，需要明确确认。");
+
+define("POST /api/agent/sales-training", objectSchema(["sourceUserId"], { sourceUserId: string({ minLength: 1, maxLength: 100 }), periodDays: integer({ minimum: 7, maximum: 365 }) }), "创建业务员训练任务；只能选择服务端允许的团队成员。");
+define("PATCH /api/agent/sales-training/{id}/samples/{sampleId}", objectSchema([], { label: oneOf("positive", "negative", "neutral"), included: boolean(), managerNote: string({ maxLength: 500 }) }), "人工标注训练样本，作为后续训练证据。");
+define("POST /api/agent/sales-distillation", objectSchema(["sourceUserId"], { sourceUserId: string({ minLength: 1, maxLength: 100 }), periodDays: integer({ minimum: 7, maximum: 365 }) }), "创建业务打法蒸馏任务。");
+defineMany(["POST /api/agent/outreach-sequences/{id}/{action}", "POST /api/agent/customer-maintenance/{id}/{action}", "POST /api/agent/sales-training/{id}/{action}", "POST /api/agent/sales-distillation/{id}/publish", "POST /api/agent/sales-distillation/{id}/activate", "POST /api/agent/sales-distillation/activations/{id}/pause"], emptySchema, "执行 Agent 业务对象的状态动作；路径 action 必须来自接口目录允许值。");
+const maintenanceRulesFields: Record<string, JsonSchema> = {
+  intervalHours: integer({ minimum: 1, maximum: 168 }),
+  inactivityDays: integer({ minimum: 1, maximum: 90 }),
+  healthBelow: integer({ minimum: 0, maximum: 100 }),
+  includeOverdueReminder: boolean(),
+  includeMissingNextAction: boolean(),
+  grades: array(oneOf("A", "B", "C", "D"), { maxItems: 4 }),
+  maxTodosPerRun: integer({ minimum: 1, maximum: 50 })
+};
+define("POST /api/agent/customer-maintenance", objectSchema([], { name: string({ maxLength: 120 }), rules: objectSchema([], maintenanceRulesFields) }), "创建客户自动维护策略；只建立站内巡检与待办，不发送任何外部消息。");
+define("POST /api/agent/customer-maintenance/preview", objectSchema([], { rules: objectSchema([], maintenanceRulesFields) }), "预检客户自动维护的命中情况，不写入任何数据。");
+define("POST /api/agent/customer-maintenance/{id}/run", emptySchema, "立即对指定客户自动维护策略巡检一次；只创建站内待办，不发送外部消息。");
+define("POST /api/agent/memories", objectSchema(["type", "scope", "title", "content"], memoryFields), "创建待审核业务记忆；团队、公司或客户范围仍受当前角色和对象权限限制。");
+define("PATCH /api/agent/memories/{id}", objectSchema([], { title: memoryFields.title, content: memoryFields.content, expiresAt: memoryFields.expiresAt }), "修改当前账号有权管理的业务记忆。");
+defineMany(["DELETE /api/agent/memories/{id}", "POST /api/agent/memories/{id}/activate", "POST /api/agent/memories/{id}/archive"], emptySchema, "管理业务记忆状态；删除需要明确确认。");
+define("POST /api/agent/knowledge/documents", objectSchema(["kind", "module", "title", "summary", "content"], knowledgeFields), "创建待审核知识文档，不能直接伪装成系统知识。");
+define("PATCH /api/agent/knowledge/documents/{id}", objectSchema([], knowledgeFields), "编辑有权限维护的知识草稿。");
+define("POST /api/agent/knowledge/documents/{id}/{action}", emptySchema, "提交、发布或归档知识文档；路径 action 必须来自接口目录允许值。");
+define("POST /api/agent/skill-resources", objectSchema(["name", "summary", "downloadUrl"], skillResourceFields), "创建团队可下载 Skill 草稿；下载链接只接受安全 HTTPS 地址，创建后仍需单独发布。");
+define("PATCH /api/agent/skill-resources/{id}", objectSchema([], skillResourceFields), "维护当前团队 Skill 资源的介绍、训练教程、优化建议和下载信息。");
+define("PATCH /api/agent/skill-resources/{id}/status", objectSchema(["status"], { status: oneOf("draft", "published", "archived") }), "发布、撤回或归档当前团队 Skill 资源；服务端复核管理权限。");
+define("POST /api/agent/skill-resources/{id}/access", emptySchema, "获取已发布 Skill 的下载地址并记录访问；真实链接只在该接口鉴权后返回。");
+define("DELETE /api/agent/skill-resources/{id}", emptySchema, "删除当前团队 Skill 资源记录，不删除外部网盘文件；需要明确确认。");
+define("POST /api/agent/tuning/inspect", objectSchema(["goal"], {
+  goal: string({ minLength: 2, maxLength: 2000 }),
+  context: objectSchema([], {
+    activeView: string({ maxLength: 80 }),
+    selectedCustomerId: string({ maxLength: 120 }),
+    selectedDealId: string({ maxLength: 120 }),
+    selectedLeadId: string({ maxLength: 120 })
+  })
+}), "只读诊断自然语言目标将命中的 GoalSpec、Skill、Knowledge、工具和授权策略，不创建或修改业务数据。");
+define("POST /api/agent/triggers", objectSchema(["name", "eventType"], triggerFields), "创建本人自动触发规则；真实发送仍必须进入单独审批。");
+define("PATCH /api/agent/triggers/{id}", objectSchema([], triggerFields), "编辑本人自动触发规则。");
+defineMany(["DELETE /api/agent/triggers/{id}", "POST /api/agent/triggers/{id}/{action}", "POST /api/agent/evaluations/run"], emptySchema, "执行 Agent 规则状态动作或评测；不会绕过下游动作权限。");
+
+const prospectContactFields: Record<string, JsonSchema> = {
+  channel: oneOf("email", "whatsapp", "call"), contactValue: string({ maxLength: 255 }), subject: string({ maxLength: 255 }),
+  content: string({ maxLength: 5000 }), occurredAt: string({ format: "date-time" }), nextFollowAt: string({ maxLength: 40 }), requestId: string({ minLength: 1, maxLength: 120 })
+};
+define("POST /api/prospect-list/{id}/send-development-email", objectSchema(["to", "subject", "body"], { to: string({ format: "email" }), subject: string({ minLength: 1, maxLength: 160 }), body: string({ minLength: 10, maxLength: 3000 }), requestId: string({ minLength: 1, maxLength: 120 }) }), "真实向已核验可联系候选发送开发信；冻结收件人、主题、正文和幂等 requestId 后确认。");
+define("POST /api/prospect-list/{id}/touchpoints", objectSchema(["recordMode", "channel", "requestId"], { ...prospectContactFields, recordMode: oneOf("historical") }), "只补录已经发生的候选客户历史触达事实；不发送、不推进状态、不创建待办。");
+define("POST /api/prospect-list/{id}/website-probe", emptySchema, "对已持久化候选的规范官网执行公开资料核验；不接受任意 URL，不处理个人联系方式。");
+defineMany(["GET /api/prospect-list/website-probe/capability", "GET /api/prospect-list/{id}/website-probe/{attemptId}"], emptySchema, "读取官网公开资料核验能力或持久化任务详情；可回填官网公开业务邮箱，未取得结果时不改变企业或 ICP 评分。");
+define("POST /api/prospect-list/{id}/identity-bootstrap", objectSchema([
+  "providerId", "registrationNumber", "requestId"
+], {
+  providerId: oneOf("gleif", "companies_house", "sec_edgar", "fr_company_search"),
+  registrationNumber: string({ minLength: 1, maxLength: 80 }),
+  requestId: string({ minLength: 8, maxLength: 120 })
+}), "按用户明确选择的权威登记来源和正式注册号创建身份核验任务；该动作会调用外部官方 API，必须冻结 Provider、注册号和 requestId 后确认，AI 不得补造注册号。");
+define("POST /api/prospect-list/{id}/identity-bootstrap/{attemptId}/reconcile", emptySchema, "推进已由用户确认并启动的身份核验任务；只接受当前任务的持久化权威证据和强标识血缘，不能用 AI 或官网结果建立企业身份。");
+defineMany([
+  "GET /api/prospect-list/{id}/identity-bootstrap",
+  "GET /api/prospect-list/{id}/identity-bootstrap/{attemptId}"
+], emptySchema, "读取身份核验来源、任务状态、阶段事件和结果详情。");
+define("POST /api/prospect-list/{id}/replies", objectSchema(["channel", "classification", "requestId"], { ...prospectContactFields, classification: oneOf("clear_demand", "interested_nurture", "referral", "no_current_demand", "rejected", "unsubscribed", "bounced", "auto_unknown"), procurement: { type: "object", additionalProperties: false, properties: { evidenceSummary: string({ maxLength: 2000 }), evidenceTypes: array(oneOf("quote_request", "product_requirement", "quantity", "sample_request", "purchase_timeline", "target_price", "certification", "delivery", "project_tender", "manual_confirmation"), { maxItems: 10 }), product: string({ maxLength: 200 }), specification: string({ maxLength: 1000 }), quantity: integer({ minimum: 0 }), quantityType: oneOf("unknown", "sample", "trial", "forecast", "order"), targetPrice: number({ minimum: 0 }), currency: string({ pattern: "^[A-Za-z]{3}$" }), priceBasis: string({ maxLength: 80 }), deliveryRequirement: string({ maxLength: 500 }), certificationRequirement: string({ maxLength: 500 }), purchaseTimeline: string({ maxLength: 500 }), projectName: string({ maxLength: 500 }), buyerRole: string({ maxLength: 100 }), nextAction: string({ maxLength: 200 }), confidence: number({ minimum: 0, maximum: 100 }) } } }), "记录候选客户真实回复；明确需求时才提交有证据的采购信息。");
+define("POST /api/prospect-list/{id}/follow-up", objectSchema([], { channel: oneOf("email", "whatsapp", "call"), dueAt: string({ maxLength: 40 }), priority: oneOf("high", "medium", "normal") }), "为候选客户创建或复用跟进待办。");
+define("POST /api/deal-recommendations/{id}/dismiss", reasonSchema, "忽略商机建议并记录原因。");
+define("POST /api/deal-recommendations/{id}/link-deal", objectSchema(["dealId"], { dealId: string({ minLength: 1 }) }), "把商机建议关联到本人真实商机。");
+
+define("POST /api/whatsapp/customers/{customerId}/binding", objectSchema(["phoneNumber"], { phoneNumber: string({ pattern: "^\\+[1-9]\\d{6,14}$" }), waProfileName: string() }), "保存客户的 WhatsApp 号码，不涉及个人 Communication 账号扫码绑定。");
+define("POST /api/whatsapp/customers/{customerId}/messages", objectSchema(["direction", "content"], { direction: oneOf("inbound", "outbound"), content: string({ minLength: 1, maxLength: 4000 }), mediaUrl: string() }), "outbound 可能真实发送，必须冻结客户、方向、正文和媒体地址后确认；inbound 只可记录已发生事实。");
+defineMany(["POST /api/whatsapp/customers/{customerId}/read", "POST /api/whatsapp/messages/{id}/translate", "DELETE /api/whatsapp/messages/{id}"], emptySchema, "管理本人可见 Communication 消息；删除需要明确确认。");
+
+const commissionProductFields: Record<string, JsonSchema> = { name: string({ minLength: 1 }), category: string(), model: string(), currency: string(), defaultPrice: number({ minimum: 0 }), costPrice: number({ minimum: 0 }), status: oneOf("active", "disabled"), remark: string() };
+const commissionRuleFields: Record<string, JsonSchema> = { ruleType: oneOf("rate", "fixed", "tier", "gross_profit", "none"), rate: number({ minimum: 0, maximum: 1 }), fixedAmount: number({ minimum: 0 }), tierJson: string(), grossProfitRate: number({ minimum: 0, maximum: 1 }), effectiveFrom: string(), effectiveTo: string(), enabled: boolean(), remark: string() };
+const salesRecordFields: Record<string, JsonSchema> = { ownerId: string(), month: string({ pattern: "^\\d{4}-\\d{2}$" }), customerId: string(), customerName: string({ minLength: 1 }), productId: string(), productName: string({ minLength: 1 }), quantity: number({ minimum: 0 }), unitPrice: number({ minimum: 0 }), salesAmount: number({ minimum: 0 }), currency: string(), exchangeRate: number({ minimum: 0 }), exchangeRateDate: string(), exchangeRateSource: oneOf("pending", "manual", "finance"), settlementCurrency: { type: "string", enum: ["CNY"] }, basisType: oneOf("deal_amount", "receipt"), basisDate: string(), status: oneOf("draft", "confirmed"), editNote: string() };
+define("POST /api/commission/products", objectSchema(["name"], commissionProductFields), "管理员创建提成产品。");
+define("PATCH /api/commission/products/{id}", objectSchema([], commissionProductFields), "管理员编辑提成产品。");
+define("POST /api/commission/products/{id}/rules", objectSchema(["ruleType"], commissionRuleFields), "管理员创建提成规则；费率必须在 0 到 1 之间。");
+define("PATCH /api/commission/rules/{id}", objectSchema([], commissionRuleFields), "管理员编辑提成规则；已使用规则会生成新版本。");
+define("POST /api/commission/sales-records", objectSchema(["customerName", "productName"], salesRecordFields), "创建销售记录；人员、客户、币种和计提依据必须来自真实业务数据。");
+define("PATCH /api/commission/sales-records/{id}", objectSchema(["editNote"], salesRecordFields), "编辑销售记录必须填写至少 2 字的审计原因。");
+define("POST /api/commission/sales-records/sync-from-deals", objectSchema([], { month: string({ pattern: "^\\d{4}-\\d{2}$" }), ownerId: string() }), "从已归档成交商机同步销售记录。");
+defineMany(["POST /api/commission/sales-records/{id}/confirm", "POST /api/commission/calculations/{id}/review", "POST /api/commission/calculations/{id}/lock"], emptySchema, "执行提成确认、复核或锁定；服务端按角色和当前状态校验。");
+define("POST /api/commission/calculations/recalculate", objectSchema([], { month: string({ pattern: "^\\d{4}-\\d{2}$" }), ownerId: string() }), "基于已确认销售记录重算提成。");
+define("POST /api/commission/calculations/{id}/manual-item", objectSchema(["remark"], { itemType: oneOf("bonus", "deduction", "subsidy", "refund", "special", "other"), manualAmount: number(), recordId: string(), remark: string({ minLength: 2 }) }), "管理员手工调整提成，必须记录原因。");
+define("POST /api/commission/calculations/{id}/unlock", objectSchema(["reason"], { reason: string({ minLength: 4 }) }), "解锁已锁定提成单并生成新版本，必须记录原因。");
+define("POST /api/commission/export", objectSchema([], { month: string({ pattern: "^\\d{4}-\\d{2}$" }), scopeType: oneOf("self", "team", "all"), ownerId: string(), fileType: oneOf("xlsx", "csv") }), "导出当前权限范围内的提成数据。");
+
+const questionFields: Record<string, JsonSchema> = { stem: string({ minLength: 1 }), category: string({ minLength: 1 }), options: array(string({ minLength: 1 }), { minItems: 2, maxItems: 6 }), answerIndex: integer({ minimum: 0 }), answerIndexes: array(integer({ minimum: 0 })), questionType: oneOf("single", "multiple"), tags: array(string()), explanation: string({ minLength: 1 }), difficulty: oneOf("easy", "medium", "hard") };
+define("POST /api/exam-questions", objectSchema(["stem", "options"], questionFields), "主管或管理员创建题库题目。");
+define("PATCH /api/exam-questions/{id}", objectSchema(["stem", "options"], questionFields), "主管或管理员完整更新题目。");
+define("POST /api/exam-questions/import", objectSchema(["questions"], { questions: array(objectSchema(["stem", "options"], questionFields), { minItems: 1, maxItems: 500 }) }), "批量导入题库，先核验题目和正确答案索引。");
+define("DELETE /api/exam-questions/{id}", emptySchema, "删除题库题目，需要明确确认。");
+const examDraftFields: Record<string, JsonSchema> = { title: string({ minLength: 1, maxLength: 200 }), category: string({ minLength: 1, maxLength: 100 }), questionIds: array(string(), { minItems: 1, maxItems: 300 }), durationMinutes: integer({ minimum: 1, maximum: 240 }), passScore: integer({ minimum: 1, maximum: 100 }), targetRole: oneOf("all", "sales", "manager"), instructions: string({ maxLength: 2000 }) };
+const examAnswers = { type: "object", additionalProperties: { oneOf: [{ type: "integer", minimum: 0 }, { type: "array", items: { type: "integer", minimum: 0 } }] } };
+define("POST /api/exams", objectSchema(["title", "category", "questionIds"], examDraftFields), "主管或管理员创建考试草稿并使用真实题目 ID；创建不等于发布。");
+define("PATCH /api/exams/{id}", objectSchema([], examDraftFields), "修改尚无作答记录的考试草稿或试卷。");
+define("POST /api/exams/{id}/questions", objectSchema(["stem", "options"], questionFields), "为考试创建一道题目。");
+define("POST /api/exams/{id}/questions/import", objectSchema(["questions"], { questions: array(objectSchema(["stem", "options"], questionFields), { minItems: 1, maxItems: 300 }) }), "为考试批量导入题目。");
+define("PATCH /api/exams/{id}/publish", objectSchema(["assigneeIds"], { assigneeIds: array(string(), { minItems: 1, maxItems: 500 }), startAt: string({ format: "date-time" }), endAt: string({ format: "date-time" }), durationMinutes: integer({ minimum: 1, maximum: 240 }), passScore: integer({ minimum: 1, maximum: 100 }), maxAttempts: integer({ minimum: 1, maximum: 10 }), allowReview: boolean(), instructions: string({ maxLength: 2000 }) }), "发布考试必须冻结真实考生名单、时间与考试规则；服务端生成题目快照和指派记录。");
+define("PATCH /api/exams/{id}/close", emptySchema, "关闭考试会自动提交进行中的作答，必须明确确认影响。");
+define("DELETE /api/exams/{id}", emptySchema, "删除考试及其指派、快照和作答记录，需要明确确认。");
+define("POST /api/exams/bulk-delete", idsSchema, "批量删除考试及作答记录，需要单独确认完整清单。");
+define("POST /api/exams/{id}/start", emptySchema, "当前账号开始或恢复本人被指派的考试，服务端创建限时作答会话。");
+define("PATCH /api/exam-attempts/{id}/answers", objectSchema(["answers"], { answers: examAnswers }), "仅保存当前账号本人的进行中答案，不判分、不交卷。");
+define("POST /api/exam-attempts/{id}/submit", objectSchema([], { answers: examAnswers }), "提交当前账号本人的考试会话，分数完全由服务端发布快照计算。");
+define("POST /api/exams/{id}/submit", objectSchema([], { answers: examAnswers }), "旧版兼容交卷入口；新流程应使用开考会话和 attempt 提交接口。");
+
+const reminderFields: Record<string, JsonSchema> = { title: string({ minLength: 1 }), rule: string({ minLength: 1 }), dueAt: string({ minLength: 1 }), channel: { type: "string", enum: ["站内"] }, ruleType: oneOf("quote_no_reply", "sample_feedback", "inactive_customer", "high_value_revisit", "custom_due"), targetStage: string(), days: integer({ minimum: 0, maximum: 90 }), generateTodo: boolean(), priority: oneOf("high", "medium", "normal"), enabled: boolean(), targetOwnerId: string() };
+define("POST /api/reminders", objectSchema([], reminderFields), "创建站内提醒规则；目标负责人必须在当前权限范围内。");
+define("PATCH /api/reminders/{id}", objectSchema([], reminderFields), "编辑提醒规则。");
+defineMany(["POST /api/reminders/{id}/run", "POST /api/reminders/{id}/toggle"], emptySchema, "运行或启停提醒规则；运行只创建站内待办，不外发消息。");
+
+define("POST /api/import-export/jobs", objectSchema(["name", "type", "rows"], { name: string({ minLength: 1 }), type: oneOf("import", "export"), rows: integer({ minimum: 0 }) }), "登记导入导出任务。");
+define("POST /api/import-export/customers/import", objectSchema(["rows"], { rows: array(objectSchema(["company"], { ...customerFields, amount: number({ minimum: 0 }) }), { minItems: 1, maxItems: 2000 }), fileName: string() }), "批量导入客户；同名本人客户会被更新，执行前必须确认数据范围。");
+define("POST /api/import-export/customers/export", emptySchema, "导出当前账号可见客户数据。");
+
+const documentItemFields: Record<string, JsonSchema> = { id: string({ maxLength: 64 }), productId: string({ maxLength: 64 }), product: string({ minLength: 1, maxLength: 500 }), model: string({ maxLength: 200 }), material: string({ maxLength: 200 }), finish: string({ maxLength: 200 }), hsCode: string({ maxLength: 40 }), quantity: number({ minimum: 0 }), unit: string({ maxLength: 40 }), unitPrice: number({ minimum: 0 }), originCountry: string({ maxLength: 80 }), weightKg: number({ minimum: 0 }), packageCount: integer({ minimum: 0 }) };
+const documentFields: Record<string, JsonSchema> = { customerId: string({ maxLength: 64 }), dealId: string({ maxLength: 64 }), revision: integer({ minimum: 1 }), derivedFromDocumentId: string({ maxLength: 64 }), derivedFromType: oneOf("PI", "CI", "CUSTOMS", "PL", "CONTRACT", "QUOTATION", "COO", "SHIPPING"), type: oneOf("PI", "CI", "CUSTOMS", "PL", "CONTRACT", "QUOTATION", "COO", "SHIPPING"), title: string({ minLength: 1, maxLength: 255 }), number: string({ minLength: 1, maxLength: 80 }), issueDate: string({ minLength: 1, maxLength: 40 }), buyer: string({ maxLength: 200 }), buyerAddress: string({ maxLength: 4000 }), buyerContact: string({ maxLength: 200 }), seller: string({ minLength: 1, maxLength: 200 }), sellerAddress: string({ maxLength: 4000 }), currency: string({ minLength: 1, maxLength: 12 }), incoterm: string({ minLength: 1, maxLength: 80 }), paymentTerm: string({ maxLength: 255 }), shippingMethod: string({ maxLength: 120 }), portLoading: string({ maxLength: 120 }), portDischarge: string({ maxLength: 120 }), validityDate: string({ maxLength: 40 }), bankInfo: string({ maxLength: 8000 }), notes: string({ maxLength: 8000 }), templateStyle: oneOf("executive", "classic", "compact", "indigo", "emerald", "rose", "slate", "amber", "longtec"), status: oneOf("draft", "ready", "pending_approval", "approved", "rejected", "exported"), approvalNote: string({ maxLength: 2000 }), approvedAt: string({ maxLength: 100 }), approvedBy: string({ maxLength: 64 }), audits: array({}), sendRecords: array({}), items: array(objectSchema(["product"], documentItemFields), { minItems: 1, maxItems: 80 }) };
+const documentAssetPlacementFields: Record<string, JsonSchema> = {
+  horizontal: oneOf("template", "left", "center", "right"),
+  vertical: oneOf("template", "top", "middle", "bottom"),
+  offsetX: integer({ minimum: -200, maximum: 200 }),
+  offsetY: integer({ minimum: -200, maximum: 200 }),
+  scale: integer({ minimum: 50, maximum: 150 })
+};
+const documentDefaultFields: Record<string, JsonSchema> = {
+  seller: string({ maxLength: 240 }), sellerAddress: string({ maxLength: 4000 }), sellerContact: string({ maxLength: 200 }),
+  sellerPhone: string({ maxLength: 120 }), sellerEmail: string({ maxLength: 180 }), sellerWebsite: string({ maxLength: 500 }), sellerTaxNo: string({ maxLength: 160 }),
+  bankInfo: string({ maxLength: 8000 }), currency: string({ maxLength: 12 }), incoterm: string({ maxLength: 80 }), paymentTerm: string({ maxLength: 255 }),
+  shippingMethod: string({ maxLength: 120 }), portLoading: string({ maxLength: 120 }), validityDays: integer({ minimum: 0, maximum: 365 }), notes: string({ maxLength: 8000 }),
+  language: oneOf("EN", "ES", "RU", "AR", "ZH"), templateStyle: oneOf("executive", "classic", "compact", "indigo", "emerald", "rose", "slate", "amber", "longtec"),
+  letterheadId: string({ maxLength: 64 }), stampId: string({ maxLength: 64 }), signatureId: string({ maxLength: 64 }), includeProductImages: boolean()
+};
+define("DELETE /api/trade-document-imports/{id}", emptySchema, "删除尚未生成正式单据的导入分析及其源文件，需要明确确认。");
+define("POST /api/trade-document-imports/analyze", emptySchema, "分析用户已明确上传的单据二进制文件；文件名、类型和内容由上传流程提供，Agent 不得伪造文件。");
+define("POST /api/trade-document-imports/analyze-ocr", emptySchema, "对用户已明确上传的单据图片做 OCR 识别；图片数据由上传流程提供，Agent 不得伪造图片内容。");
+define("POST /api/trade-document-imports/{id}/confirm", objectSchema(["document"], { document: objectSchema(["title", "number", "issueDate", "seller", "items"], documentFields) }), "将已审核的导入分析生成为单据草稿，必须完整确认识别字段和商品明细。");
+define("POST /api/trade-document-imports/{id}/recognition-template", objectSchema(["name", "document"], { name: string({ minLength: 1, maxLength: 120 }), familyId: string({ maxLength: 64 }), document: objectSchema(["title", "number", "issueDate", "seller", "items"], documentFields) }), "把已审核的导入分析字段保存为识别模板；模板名称与单据字段必须真实确认。");
+define("POST /api/trade-document-recognition-templates/{id}/archive", emptySchema, "归档识别模板；归档后不再参与新单据识别匹配。");
+define("POST /api/trade-document-recognition-templates/{id}/restore", emptySchema, "恢复已归档的识别模板。");
+define("PUT /api/document-defaults", objectSchema([], documentDefaultFields), "维护当前团队的单据默认资料，仅管理员可执行。");
+define("POST /api/document-assets/letterheads", objectSchema(["name", "companyName"], {
+  id: string({ maxLength: 64 }), name: string({ minLength: 1, maxLength: 160 }), companyName: string({ minLength: 1, maxLength: 240 }),
+  address: string({ maxLength: 4000 }), phone: string({ maxLength: 120 }), email: string({ maxLength: 180 }), website: string({ maxLength: 500 }),
+  bankInfo: string({ maxLength: 8000 }), logoUrl: string({ maxLength: 512 }), logoPlacement: objectSchema([], documentAssetPlacementFields), isDefault: boolean(), enabled: boolean()
+}), "创建或修改当前团队的单据抬头；Logo 必须引用本系统已上传文件。");
+define("POST /api/document-assets/stamps", objectSchema(["name", "imageUrl"], {
+  id: string({ maxLength: 64 }), name: string({ minLength: 1, maxLength: 160 }), imageUrl: string({ minLength: 1, maxLength: 512 }),
+  placement: objectSchema([], documentAssetPlacementFields), isDefault: boolean(), enabled: boolean()
+}), "创建或修改当前团队的印章；图片必须引用本系统已上传文件。");
+define("POST /api/document-assets/signatures", objectSchema(["name", "imageUrl"], {
+  id: string({ maxLength: 64 }), name: string({ minLength: 1, maxLength: 160 }), signerName: string({ maxLength: 160 }), signerTitle: string({ maxLength: 160 }),
+  imageUrl: string({ minLength: 1, maxLength: 512 }), isDefault: boolean(), enabled: boolean()
+}), "创建或修改当前团队的签名；图片必须引用本系统已上传文件。");
+defineMany(["DELETE /api/document-assets/letterheads/{id}", "DELETE /api/document-assets/stamps/{id}", "DELETE /api/document-assets/signatures/{id}"], emptySchema, "删除或停用当前团队的单据素材，需要明确确认。");
+define("POST /api/document-assets/upload", objectSchema(["image", "mime", "kind"], {
+  image: string({ minLength: 1, maxLength: 3000000 }), mime: oneOf("image/png", "image/jpeg"), kind: oneOf("letterhead-logo", "stamp", "signature", "product")
+}), "上传用户明确选择的 PNG/JPEG 单据素材，不得生成或替换用户未确认的图片。");
+define("POST /api/trade-documents", objectSchema(["title", "number", "issueDate", "seller", "items"], documentFields), "创建 PI/CI 单据；客户、商机、商品和贸易条款必须来自真实业务数据。");
+define("POST /api/trade-documents/{id}/convert", objectSchema(["targetType"], { targetType: oneOf("PI", "CI", "CUSTOMS", "PL", "CONTRACT", "QUOTATION", "COO", "SHIPPING") }), "从当前可见单据生成其它类型的独立草稿；源单据不会被覆盖，响应 document.id 是完成证据。");
+define("PATCH /api/trade-documents/{id}", objectSchema(["title", "number", "issueDate", "seller", "items"], documentFields), "完整更新未审批单据；已审批或导出单据必须创建新版本。");
+define("PATCH /api/trade-documents/{id}/excel-options", objectSchema([], { letterheadId: string({ maxLength: 64 }), stampId: string({ maxLength: 64 }), signatureId: string({ maxLength: 64 }), includeProductImages: boolean() }), "修改未审批单据的 Excel 抬头、印章、签名和商品图片选项。");
+defineMany(["POST /api/trade-documents/{id}/export-xlsx", "POST /api/trade-documents/{id}/preview-xlsx"], objectSchema(["templateId"], { templateId: string({ minLength: 1, maxLength: 120 }) }), "使用用户选定的有效模板预览或导出高级 Excel；服务端复核单据归属、模板类型和审批设置。");
+defineMany(["POST /api/trade-documents/{id}/revision", "POST /api/trade-documents/{id}/export"], emptySchema, "创建单据新版本或导出已审批单据。");
+defineMany(["POST /api/trade-documents/{id}/submit-approval", "POST /api/trade-documents/{id}/approve"], objectSchema([], { note: string() }), "提交或批准贸易单据，可记录审批说明。");
+define("POST /api/trade-documents/{id}/reject", objectSchema(["note"], { note: string({ minLength: 1 }) }), "驳回单据必须填写原因。");
+define("POST /api/trade-documents/{id}/send", objectSchema(["recipient"], { channel: oneOf("email", "whatsapp", "wechat", "manual"), recipient: string({ minLength: 1 }), message: string() }), "记录或发送已审批单据；渠道、接收方和内容冻结后确认。");
+define("POST /api/deals/{dealId}/generate-customs", emptySchema, "根据真实商机、客户及已有关联单据生成报关资料草稿。");
+define("POST /api/customs-documents/export", objectSchema(["customsDocument"], { customsDocument: { type: "object", required: ["customerId", "dealId", "number", "issueDate", "items"], additionalProperties: false, properties: { id: string(), customerId: string({ minLength: 1 }), dealId: string({ minLength: 1 }), tradeDocumentId: string(), number: string({ minLength: 1 }), issueDate: string({ minLength: 1 }), shipper: string(), shipperAddress: string(), shipperTaxNo: string(), consignee: string(), consigneeAddress: string(), manufacturer: string(), manufacturerTaxNo: string(), transportMode: string(), vesselName: string(), exitPort: string(), exitDate: string(), tradeMode: string(), supervisionMode: string(), tradeCountry: string(), destinationCountry: string(), packageType: string(), packageCount: number({ minimum: 0 }), grossWeight: number({ minimum: 0 }), netWeight: number({ minimum: 0 }), tradeMethod: string(), contractNo: string(), currency: string(), incoterm: string(), paymentTerm: string(), notes: string(), status: oneOf("draft", "ready", "exported"), ownerId: string(), teamId: string(), updatedAt: string(), items: array(objectSchema(["product"], { ...documentItemFields, brand: string(), brandType: string(), exportBenefit: string(), inspectionCode: string(), productEnglish: string() }), { minItems: 1 }) } } }), "导出报关资料；服务端再次校验商机、客户归属和必填报关字段。");
+
+defineMany(["POST /api/wecom/messages/{id}/archive", "POST /api/tools/ocr/jobs/{id}/sync-lead", "POST /api/prospect-agent-jobs/{id}/retry", "POST /api/prospect-agent-jobs/{id}/cancel", "POST /api/prospect-schedules/{id}/pause", "POST /api/prospect-schedules/{id}/resume", "DELETE /api/prospect-schedules/{id}", "POST /api/dashboard/priority-tasks/batch-process"], emptySchema, "执行当前账号有权限的状态动作；服务端核验对象归属和可转换状态。");
+define("POST /api/wecom-command/endpoints/{id}/disable", emptySchema, "停用当前团队的企业微信指令回调；服务端按当前管理员团队范围校验目标端点。");
+define("DELETE /api/wecom-command/bindings/{id}", emptySchema, "撤销当前团队的企业微信成员绑定；服务端按当前管理员团队范围校验目标绑定。");
+define("POST /api/wecom/commands/{callbackPublicId}", emptySchema, "接收企业微信官方加密回调；该公开入口只执行签名、时间窗、解密和绑定校验，不接受 Agent 伪造业务指令。");
+define("POST /api/tools/ocr/jobs/{id}/recognize", objectSchema([], { confidence: number({ minimum: 0, maximum: 100 }), company: string({ maxLength: 200 }), contact: string({ maxLength: 120 }), title: string({ maxLength: 120 }), email: string({ maxLength: 254 }), whatsapp: string({ maxLength: 60 }), wechat: string({ maxLength: 80 }), phone: string({ maxLength: 60 }), country: string({ maxLength: 80 }), city: string({ maxLength: 120 }) }), "保存名片 OCR 识别结果；仅写入真实识别或人工纠正的字段。");
+define("POST /api/tools/ocr/batches", objectSchema(["files"], { files: array(objectSchema(["name", "size", "mime"], { name: string({ minLength: 1, maxLength: 255 }), size: integer({ minimum: 1, maximum: 2097152 }), mime: oneOf("image/png", "image/jpeg", "image/webp") }), { minItems: 1, maxItems: 50 }) }), "为用户明确选择的名片图片建立批量 OCR 任务，单批最多 50 张。");
+defineMany(["DELETE /api/tools/ocr/batches/{batchId}", "DELETE /api/tools/ocr/jobs/{id}/image"], emptySchema, "删除本人 OCR 批次或任务图片，需要明确确认。");
+define("POST /api/tools/ocr/jobs/{id}/image", objectSchema(["image", "mime"], { image: string({ minLength: 1, maxLength: 3000000 }), mime: oneOf("image/png", "image/jpeg", "image/webp"), fileName: string({ maxLength: 255 }) }), "为本人 OCR 任务上传用户明确选择的名片图片。");
+define("POST /api/tools/ocr/jobs/{id}/recognize-image", emptySchema, "使用当前账号已配置的视觉模型识别本人已上传的名片图片。");
+define("POST /api/prospect-list/{id}/contact-enrichment", objectSchema([], { force: boolean() }), "从已配置的合规来源补充本人候选客户联系方式；强制重试必须由用户明确要求。");
+define("POST /api/prospect-list/{id}/identity-bootstrap/discover", objectSchema(["providerId"], { providerId: oneOf("gleif", "companies_house", "sec_edgar", "fr_company_search") }), "使用已启用的企业登记数据源查找候选客户注册号，不访问未授权来源。");
+define("PATCH /api/prospect-list/{id}/details", objectSchema(["company", "website"], { company: string({ minLength: 1, maxLength: 200 }), business: string({ maxLength: 255 }), country: string({ maxLength: 80 }), website: string({ minLength: 3, maxLength: 255 }), contact: string({ maxLength: 120 }), contactInfo: string({ maxLength: 255 }), description: string({ maxLength: 1000 }) }), "更新未入库候选详情，信息必须有来源依据。");
+define("PATCH /api/prospect-list/batch", objectSchema(["ids", "action"], { ids: array(string({ minLength: 1 }), { minItems: 1, maxItems: 100 }), action: oneOf("mark-contactable", "exclude", "restore", "assign"), ownerId: string({ minLength: 1 }), reason: string({ maxLength: 255 }), requestId: string({ minLength: 1, maxLength: 120 }), effectiveAt: string({ format: "date-time" }) }), "批量处理候选客户；分配涉及人员目录且只允许主管或管理员执行。");
+
+const qualificationRequestId = string({ minLength: 8, maxLength: 120 });
+const qualificationEvidenceSource = oneOf("official_website", "licensed_data", "public_directory", "crm_manual");
+define("POST /api/prospect-list/{id}/qualification/company", objectSchema([
+  "requestId", "providerCode", "registrationNumber", "operatingStatus", "jurisdiction",
+  "sourceRef", "authorityCode", "observedAt", "validUntil"
+], {
+  requestId: qualificationRequestId,
+  providerCode: oneOf("gleif", "companies_house", "sec_edgar", "fr_company_search"),
+  registrationNumber: string({ minLength: 2, maxLength: 80 }),
+  operatingStatus: oneOf("active", "registered", "operating", "in_operation", "inactive", "dissolved", "liquidated", "struck_off", "closed"),
+  jurisdiction: string({ minLength: 2, maxLength: 40 }),
+  sourceRef: string({ minLength: 3, maxLength: 1000, pattern: "^https://" }),
+  authorityCode: string({ minLength: 2, maxLength: 80 }),
+  observedAt: string({ format: "date-time" }),
+  validUntil: string({ format: "date-time" }),
+  officialDomain: string({ maxLength: 500 })
+}), "记录来自白名单企业登记机关的企业核验事实；AI 只能整理真实返回值，提交前必须由用户确认来源和注册号。");
+
+const icpDimensionScores = objectSchema([
+  "productApplicationMatch", "customerType", "marketCountry", "companyAuthenticity",
+  "purchasingChannelCapability", "contactability", "freshness"
+], {
+  productApplicationMatch: integer({ minimum: 0, maximum: 30 }),
+  customerType: integer({ minimum: 0, maximum: 15 }),
+  marketCountry: integer({ minimum: 0, maximum: 10 }),
+  companyAuthenticity: integer({ minimum: 0, maximum: 15 }),
+  purchasingChannelCapability: integer({ minimum: 0, maximum: 15 }),
+  contactability: integer({ minimum: 0, maximum: 10 }),
+  freshness: integer({ minimum: 0, maximum: 5 })
+});
+const icpEvidence = objectSchema([
+  "field", "value", "sourceType", "providerCode", "sourceRef", "observedAt"
+], {
+  field: oneOf("product_match", "customer_type", "market_match", "purchasing_capability", "freshness"),
+  value: string({ minLength: 2, maxLength: 1000 }),
+  sourceType: qualificationEvidenceSource,
+  providerCode: string({ minLength: 2, maxLength: 80 }),
+  sourceRef: string({ minLength: 3, maxLength: 1000 }),
+  excerpt: string({ maxLength: 1000 }),
+  observedAt: string({ format: "date-time" }),
+  expiresAt: string({ format: "date-time" })
+});
+define("POST /api/prospect-list/{id}/qualification/icp", objectSchema([
+  "requestId", "dimensionScores", "evidence"
+], {
+  requestId: qualificationRequestId,
+  campaignId: string({ maxLength: 80 }),
+  campaignVersion: integer({ minimum: 1 }),
+  dimensionScores: icpDimensionScores,
+  evidence: array(icpEvidence, { minItems: 1, maxItems: 12 }),
+  hardGateReasonCodes: array(string({ minLength: 1, maxLength: 80 }), { maxItems: 20 })
+}), "基于已记录证据生成 ICP 评分快照；不得让 AI 补造证据或把推断写成事实。");
+define("POST /api/prospect-list/{id}/qualification/icp/{assessmentId}/approve", objectSchema(["requestId"], {
+  requestId: qualificationRequestId
+}), "批准当前 ICP 评分快照；必须由用户明确确认，资料变化后旧批准失效。");
+
+define("POST /api/prospect-list/{id}/qualification/channel", objectSchema([
+  "requestId", "contactType", "identityStatus", "channelType", "value", "sourceType",
+  "sourceProviderCode", "sourceRef", "acquiredAt", "verificationBasis",
+  "verificationProviderCode", "verificationReasonCode", "verifiedAt", "expiresAt", "humanConfirmed"
+], {
+  requestId: qualificationRequestId,
+  contactType: oneOf("named_person", "department", "company_public"),
+  name: string({ maxLength: 120 }),
+  department: string({ maxLength: 120 }),
+  title: string({ maxLength: 120 }),
+  identityStatus: oneOf("unconfirmed", "source_confirmed", "human_confirmed"),
+  channelType: oneOf("email", "phone", "whatsapp", "website_form"),
+  value: string({ minLength: 3, maxLength: 500 }),
+  sourceType: qualificationEvidenceSource,
+  sourceProviderCode: string({ minLength: 2, maxLength: 80 }),
+  sourceRef: string({ minLength: 3, maxLength: 1000 }),
+  excerpt: string({ maxLength: 1000 }),
+  acquiredAt: string({ format: "date-time" }),
+  verificationBasis: oneOf("official_source_manual", "provider_verified", "positive_reply"),
+  verificationProviderCode: string({ minLength: 2, maxLength: 80 }),
+  verificationReasonCode: string({ minLength: 2, maxLength: 120 }),
+  verifiedAt: string({ format: "date-time" }),
+  expiresAt: string({ format: "date-time" }),
+  humanConfirmed: { type: "boolean", enum: [true] }
+}), "保存已核验联系渠道；humanConfirmed 只能代表用户实际完成确认，AI 不得自行设置为事实。");
+define("POST /api/prospect-list/{id}/qualification/contactability/evaluate", objectSchema(["requestId"], {
+  requestId: qualificationRequestId,
+  channelId: string({ maxLength: 90 })
+}), "针对当前企业、ICP 和渠道快照计算可联系门禁，不代表自动批准。");
+define("POST /api/prospect-list/{id}/qualification/contactability/{decisionId}/approve", objectSchema(["requestId"], {
+  requestId: qualificationRequestId
+}), "批准当前可联系决策；必须由归属业务员明确确认，AI 不得代替人工批准。");
+define("POST /api/prospect-list/{id}/qualification/suppress", objectSchema([
+  "requestId", "scope", "action", "reasonCode", "effectiveAt"
+], {
+  requestId: qualificationRequestId,
+  scope: oneOf("contact_channel", "contact_all", "organization_channel", "organization_all"),
+  action: oneOf("imposed", "revoked"),
+  contactId: string({ maxLength: 90 }),
+  channelId: string({ maxLength: 90 }),
+  channelType: oneOf("email", "phone", "whatsapp", "website_form"),
+  reasonCode: string({ minLength: 2, maxLength: 120 }),
+  reasonNote: string({ maxLength: 500 }),
+  effectiveAt: string({ format: "date-time" }),
+  expiresAt: string({ format: "date-time" }),
+  doNotContact: boolean()
+}), "施加或撤销联系抑制；企业永久禁止联系属于高影响人工确认动作。");
+
+const leadFinderFields: Record<string, JsonSchema> = { productKeywords: string(), countries: string(), industry: string(), customerType: string(), goal: string(), excludeKeywords: string(), sources: array(string({ pattern: "^[a-z0-9_]+$" }), { maxItems: 64 }), useAi: boolean(), limit: number({ minimum: 1, maximum: 30 }) };
+define("POST /api/tools/products", objectSchema(["nameZh"], productFields), "创建或更新本人的产品资料；只能提交用户确认的产品字段，ownerId 和 teamId 由服务端写入。");
+define("DELETE /api/tools/products/{id}", emptySchema, "删除本人的产品资料；必须明确确认目标产品 ID。");
+define("POST /api/tools/product-categories", objectSchema(["name"], { name: string({ minLength: 1, maxLength: 80 }) }), "创建当前团队的产品分类。");
+define("PATCH /api/tools/product-categories", objectSchema(["currentName", "name"], { currentName: string({ minLength: 1, maxLength: 80 }), name: string({ minLength: 1, maxLength: 80 }) }), "重命名当前团队的产品分类，并同步更新相关产品。");
+define("DELETE /api/tools/product-categories/{name}", emptySchema, "删除当前团队的产品分类并清空相关产品分类字段，需要明确确认。");
+define("POST /api/tools/shipments", objectSchema([], shipmentFields), "创建或更新本人的发货记录；运单号、物流状态和商品明细必须来自用户确认的信息。");
+define("DELETE /api/tools/shipments/{id}", emptySchema, "删除本人的发货记录；必须明确确认目标发货记录 ID。");
+define("POST /api/tools/shipments/{id}/sync", emptySchema, "访问承运商官方接口同步本人指定发货记录；发货记录 ID 来自路径且必须由服务端校验归属，不接受 ownerId 或 teamId。");
+define("POST /api/tools/shipments/sync-all", emptySchema, "访问承运商官方接口批量同步本人全部在途发货记录；调用范围由登录身份确定，不接受 ownerId 或 teamId。");
+define("POST /api/tools/shipments/ocr", objectSchema(["image"], {
+  image: string({ minLength: 1, maxLength: 20_000_000 }),
+  mime: oneOf("image/png", "image/jpeg")
+}), "把用户明确选择的运单图片发送给已配置的视觉模型识别；图片载荷和 MIME 类型必须冻结确认。");
+define("POST /api/lead-finder/parse-goal", objectSchema(["goal"], {
+  goal: string({ minLength: 1, maxLength: 2000 })
+}), "把用户的搜客目标发送给已配置的 AI 模型并返回可编辑搜索结构；不得把解析结果直接视为已启动搜客。");
+define("POST /api/lead-finder/launch", objectSchema(["mode", "campaign", "strategy"], {
+  mode: oneOf("standard", "super"),
+  campaign: objectSchema(["name", "snapshot"], {
+    name: string({ minLength: 1, maxLength: 160 }),
+    ownerId: string({ minLength: 1, maxLength: 64 }),
+    snapshot: objectSchema(["products", "markets", "sourceProviderIds"], {
+      goal: string({ maxLength: 1000 }),
+      products: array(string({ minLength: 1, maxLength: 200 }), { minItems: 1, maxItems: 100 }),
+      markets: array(string({ minLength: 1, maxLength: 200 }), { minItems: 1, maxItems: 100 }),
+      customerTypes: array(string({ minLength: 1, maxLength: 200 }), { maxItems: 100 }),
+      applicationScenarios: array(string({ minLength: 1, maxLength: 200 }), { maxItems: 100 }),
+      icpRules: array(string({ minLength: 1, maxLength: 200 }), { maxItems: 100 }),
+      exclusionRules: array(string({ minLength: 1, maxLength: 200 }), { maxItems: 100 }),
+      sourceProviderIds: array(string({ pattern: "^[A-Za-z0-9._-]+$" }), { minItems: 1, maxItems: 100 })
+    })
+  }),
+  strategy: objectSchema(["providerPlan"], {
+    name: string({ minLength: 1, maxLength: 160 }),
+    query: objectSchema([], {
+      keywordMode: oneOf("campaign_products", "specific"),
+      positiveKeywords: array(string(), { maxItems: 100 }),
+      synonyms: array(string(), { maxItems: 100 }),
+      industryTerms: array(string(), { maxItems: 100 }),
+      purchaseScenarioTerms: array(string(), { maxItems: 100 }),
+      countryMode: oneOf("campaign_markets", "specific", "global"),
+      countries: array(string(), { maxItems: 100 }),
+      languages: array(string(), { maxItems: 100 }),
+      customerTypeMode: oneOf("campaign_customer_types", "specific", "all"),
+      customerTypes: array(string(), { maxItems: 100 }),
+      exclusionKeywords: array(string(), { maxItems: 100 }),
+      exclusionDomains: array(string(), { maxItems: 100 }),
+      timeWindow: objectSchema([], {
+        mode: oneOf("all", "custom"),
+        from: string(),
+        to: string()
+      })
+    }),
+    providerPlan: array(objectSchema(["providerId", "priority", "pageLimit", "resultLimit"], {
+      providerId: string({ pattern: "^[A-Za-z0-9._-]+$" }),
+      priority: integer({ minimum: 1, maximum: 1000 }),
+      pageLimit: integer({ minimum: 1, maximum: 100 }),
+      resultLimit: integer({ minimum: 1, maximum: 1000 }),
+      budgetLimit: number({ minimum: 0 }),
+      currency: string({ pattern: "^$|^[A-Z]{3}$" })
+    }), { minItems: 1, maxItems: 100 }),
+    reason: string({ maxLength: 500 })
+  }),
+  schedule: objectSchema(["frequency"], {
+    frequency: oneOf("daily", "weekly", "monthly"),
+    timezone: string({ minLength: 1, maxLength: 100 }),
+    recurringCostApproved: boolean()
+  }),
+  superSearch: objectSchema(["targetCandidateCount", "maxDurationMinutes", "depth"], {
+    targetCandidateCount: integer({ minimum: 20, maximum: 10000 }),
+    maxDurationMinutes: integer({ minimum: 30, maximum: 4320 }),
+    depth: oneOf("balanced", "deep", "extreme"),
+    costLimit: number({ minimum: 0, maximum: 1000000 }),
+    currency: string({ pattern: "^$|^[A-Z]{3}$" }),
+    aiMode: oneOf("auto", "off"),
+    webSearchMode: oneOf("off", "api"),
+    mapSearchMode: oneOf("off", "google_places"),
+    aiDiscoveryMode: oneOf("off", "model")
+  })
+}), "一次性冻结活动、策略、来源、预算和运行方式并启动搜客；属于外部搜索动作，必须确认完整载荷和费用上限，响应 run.id 是入队证据。");
+define("POST /api/lead-finder/free-search", objectSchema([], { productKeywords: string(), countries: string(), industry: string(), customerType: string(), goal: string(), limit: number({ minimum: 1, maximum: 30 }) }), "使用公开免费来源搜索候选客户，属于外部数据访问，需要确认搜索条件。");
+define("POST /api/lead-finder/search", objectSchema([], leadFinderFields), "使用已启用来源执行自动搜客，属于外部数据访问，需要确认来源和条件。");
+define("POST /api/lead-finder/lfind-tasks", objectSchema([], { goal: string({ maxLength: 4000 }), productKeywords: string({ maxLength: 2000 }), countries: string({ maxLength: 2000 }), industry: string({ maxLength: 2000 }), customerType: string({ maxLength: 2000 }), excludeKeywords: string({ maxLength: 2000 }), sources: array(string({ pattern: "^[a-z0-9_]+$", minLength: 1, maxLength: 64 }), { maxItems: 64 }), useAi: boolean(), limit: number({ minimum: 1, maximum: 30 }) }), "通过本地 Lfind Runner 执行深入搜客查询；任务以只读模式进入本地队列，属于外部数据访问，需要确认搜索条件。");
+define("POST /api/prospect-super-search/preview", objectSchema(["products", "markets", "customerTypes", "providerIds"], { products: array(string({ minLength: 1 }), { minItems: 1, maxItems: 30 }), markets: array(string({ minLength: 1 }), { minItems: 1, maxItems: 30 }), customerTypes: array(string({ minLength: 1 }), { minItems: 1, maxItems: 20 }), industries: array(string({ minLength: 1 }), { maxItems: 30 }), providerIds: array(string({ pattern: "^[a-z0-9_]+$" }), { minItems: 1, maxItems: 30 }), depth: oneOf("balanced", "deep", "extreme"), targetCandidateCount: integer({ minimum: 20, maximum: 10000 }), maxDurationMinutes: integer({ minimum: 30, maximum: 4320 }), costLimit: number({ minimum: 0 }), currency: string({ pattern: "^$|^[A-Z]{3}$" }) }), "预估超级搜索矩阵、轮次、时长与预算，不访问外部数据源。");
+define("POST /api/prospect-super-search", objectSchema(["strategyId"], { strategyId: string({ minLength: 1, maxLength: 80 }), targetCandidateCount: integer({ minimum: 20, maximum: 10000 }), maxDurationMinutes: integer({ minimum: 30, maximum: 4320 }), depth: oneOf("balanced", "deep", "extreme"), costLimit: number({ minimum: 0 }), currency: string({ pattern: "^$|^[A-Z]{3}$" }), aiMode: oneOf("auto", "off") }), "创建多轮超级搜索任务；只调用策略 allowlist 中的公开或已授权 API，预算大于零时必须冻结预算确认。");
+defineMany(["POST /api/prospect-super-search/{id}/pause", "POST /api/prospect-super-search/{id}/resume", "POST /api/prospect-super-search/{id}/cancel"], reasonSchema, "暂停、恢复或取消当前账号有权限的超级搜索任务，不改变已形成的候选和来源证据。");
+defineMany([
+  "POST /api/prospect-runs/{id}/import-pending",
+  "POST /api/prospect-super-search/{id}/import-pending"
+], hitIdsSchema, "只处理用户明确选择的待清洗原始命中；hitIds 必须属于当前账号可见的已结束任务，继续执行字段校验、身份归一和覆盖分流，不自动生成正式线索。");
+define("POST /api/tools/website-scrape/preview", objectSchema(["urls"], { urls: array(string({ minLength: 3 }), { minItems: 1, maxItems: 12 }), useAi: boolean() }), "登记官网链接并生成候选预览；公开资料将在后续核验流程中补全。");
+define("POST /api/tools/website-scrape/sync-opportunities", objectSchema(["requestId", "opportunities"], { requestId: string({ minLength: 8, maxLength: 120 }), opportunities: array(objectSchema(["id", "company", "website"], { id: string({ minLength: 1 }), company: string({ minLength: 1 }), business: string(), country: string(), website: string({ minLength: 3 }), contact: string(), contactInfo: string(), description: string(), source: string({ maxLength: 40 }), sourceLabel: string({ maxLength: 80 }) }), { minItems: 1, maxItems: 100 }) }), "把已完成核验并标记为可联系的候选同步为线索；requestId 冻结整批幂等语义，每个候选 ID 必须属于当前账号，预览候选不能绕过核验门禁。");
+defineMany(["POST /api/prospect-strategy-suggestions/{id}/accept", "POST /api/prospect-strategy-suggestions/{id}/reject"], objectSchema([], { note: string({ maxLength: 500 }) }), "接受或拒绝本人获客策略建议。");
+define("POST /api/prospect-strategies/{id}/schedules", objectSchema(["frequency"], { frequency: oneOf("daily", "weekly", "monthly"), timezone: string({ minLength: 1, maxLength: 100 }), recurringCostApproved: boolean() }), "为已批准策略建立定时获客计划；重复外部成本必须明确授权。");
+define("PATCH /api/reports/executive/note", objectSchema([], { note: string({ maxLength: 1000 }) }), "维护本人经营报告备注。");
+
+function normalizeTemplate(path: string) {
+  return path.replace(/:([A-Za-z0-9_]+)/gu, "{$1}");
+}
+
+function isStrongSchema(schema: unknown): schema is JsonSchema {
+  if (!schema || typeof schema !== "object") return false;
+  const record = schema as JsonSchema;
+  return record.type === "object" && record.additionalProperties !== true;
+}
+
+function entityForPath(path: string) {
+  const segment = path.split("/").filter(Boolean)[1] || "crm";
+  return segment.replace(/-/gu, "_");
+}
+
+function refreshViewForPath(path: string) {
+  const rules: Array<[string, string]> = [
+    ["/api/customers", "customers"], ["/api/leads", "leads"], ["/api/deals", "pipeline"], ["/api/todos", "todos"],
+    ["/api/plan-", "plan"], ["/api/whatsapp", "whatsapp"], ["/api/reminders", "reminders"], ["/api/memos", "memos"],
+    ["/api/development-email", "development-email"], ["/api/trade-documents", "documents"], ["/api/prospect", "lead-finder"],
+    ["/api/lead-finder", "lead-finder"], ["/api/agent/sales-", "sales-distillation"], ["/api/reports", "reports"]
+  ];
+  return rules.find(([prefix]) => path.startsWith(prefix))?.[1] || "";
+}
+
+function completionFor(method: string, path: string): AgentCompletionEvidence {
+  if (method === "DELETE") return { type: "deleted_object", responsePaths: ["id", "deleted", "ok", "lead.id", "memo.id", "todo.id", "task.id", "template.id", "message.id", "question.id", "exam.id", "schedule.id", "rule.id", "memory.id", "product.id", "shipment.id"], description: "HTTP 成功且响应确认删除对象或状态" };
+  const createPaths: Record<string, string[]> = {
+    "/api/customers": ["customer.id"], "/api/leads": ["lead.id"], "/api/deals": ["deal.id"], "/api/todos": ["todo.id"],
+    "/api/plan-tasks": ["task.id"], "/api/plan-templates": ["template.id"], "/api/memos": ["memo.id"], "/api/problems": ["problem.id"], "/api/competitors": ["competitor.id"],
+    "/api/case-studies": ["caseStudy.id"], "/api/knowledge/assets": ["asset.id"], "/api/daily-reports": ["report.id"],
+    "/api/daily-reports/{id}/comments": ["comment.id"], "/api/internal-messages": ["message.id"], "/api/internal-messages/system": ["message.id"],
+    "/api/commission/products": ["product.id"], "/api/commission/products/{id}/rules": ["rule.id"], "/api/commission/sales-records": ["record.id"],
+    "/api/exam-questions": ["question.id"], "/api/exams": ["exam.id"], "/api/reminders": ["reminder.id"], "/api/trade-documents": ["document.id"],
+    "/api/agent/sales-training": ["run.id"], "/api/agent/sales-distillation": ["distillation.id"],
+    "/api/agent/memories": ["memory.id"], "/api/agent/knowledge/documents": ["document.id"], "/api/agent/triggers": ["rule.id"],
+    "/api/lead-finder/launch": ["run.id"],
+    "/api/prospect-strategies/{id}/schedules": ["schedule.id"],
+    "/api/tools/products": ["product.id"], "/api/tools/shipments": ["shipment.id"]
+  };
+  const responsePaths = createPaths[path];
+  return responsePaths
+    ? { type: "created_object_id", responsePaths, description: "响应必须包含服务端生成的对象 ID" }
+    : { type: "response", description: "HTTP 成功且返回当前操作的业务结果" };
+}
+
+function authorizationFor(method: string, path: string, risk: AgentOperationRisk): AgentAuthorizationPolicy {
+  if (risk === "read") return "read_only";
+  if (risk === "external") return "frozen_payload_confirmation";
+  if (path.includes("/qualification/")
+    || path.includes("/identity-bootstrap/")) return "explicit_confirmation";
+  if (method === "DELETE" || /(bulk|batch|\/permanent$|\/release$|\/lost$)/u.test(path)) return "explicit_confirmation";
+  return "direct_user_intent";
+}
+
+export function agentApiOperationContract(methodInput: string, rawPath: string, openApiSchema?: unknown, riskInput?: AgentOperationRisk): AgentOperationContract {
+  const method = methodInput.toUpperCase() as AgentOperationContract["method"];
+  const path = normalizeTemplate(rawPath);
+  const risk = riskInput || (method === "GET" ? "read" : "write");
+  const registered = registry[`${method} ${path}`];
+  const openApiStrong = isStrongSchema(openApiSchema);
+  const requestSchema = method === "GET"
+    ? null
+    : registered?.schema || (openApiStrong ? openApiSchema : null);
+  const operation = `${method === "GET" ? "查询" : method === "DELETE" ? "删除" : method === "POST" ? "执行/创建" : "更新"}${entityForPath(path)}`;
+  return {
+    version: "1.0",
+    method,
+    path,
+    operation,
+    entity: entityForPath(path),
+    intentExamples: [],
+    requestSchema,
+    risk,
+    authorizationPolicy: authorizationFor(method, path, risk),
+    completionEvidence: completionFor(method, path),
+    refreshView: method === "GET" ? "" : refreshViewForPath(path),
+    guidance: registered?.guidance || (method === "GET" ? "只读取当前账号有权访问的数据。" : openApiStrong ? "严格按当前接口 Schema 提交；业务权限由服务端再次校验。" : "接口尚未建立可执行参数契约。"),
+    schemaSource: registered ? "registry" : openApiStrong ? "openapi" : "none",
+    executable: method === "GET" || Boolean(requestSchema)
+  };
+}
+
+export function agentApiBusinessContract(method: string, path: string): AgentApiBusinessContract | null {
+  return registry[`${method.toUpperCase()} ${normalizeTemplate(path)}`] || null;
+}
+
+export function assertAgentOperationInput(contract: AgentOperationContract, body: unknown) {
+  if (!contract.executable) throw new Error("该接口尚未建立严格 Agent 操作契约，已阻止盲目执行");
+  if (contract.method === "GET") return;
+  validateJsonSchema(contract.requestSchema!, body === undefined ? {} : body, "body");
+}
+
+function validateJsonSchema(schema: JsonSchema, value: unknown, path: string) {
+  if (!Object.keys(schema).length) return;
+  const type = schema.type;
+  if (type === "object") {
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${path} 必须是对象`);
+    const record = value as Record<string, unknown>;
+    const properties = (schema.properties || {}) as Record<string, JsonSchema>;
+    for (const required of (schema.required || []) as string[]) {
+      if (record[required] === undefined || record[required] === null || record[required] === "") throw new Error(`${path}.${required} 为必填字段`);
+    }
+    if (schema.additionalProperties === false) {
+      const unknown = Object.keys(record).find((key) => !Object.prototype.hasOwnProperty.call(properties, key));
+      if (unknown) throw new Error(`${path}.${unknown} 不在接口契约中`);
+    }
+    for (const [key, item] of Object.entries(record)) if (properties[key]) validateJsonSchema(properties[key], item, `${path}.${key}`);
+    return;
+  }
+  if (type === "array") {
+    if (!Array.isArray(value)) throw new Error(`${path} 必须是数组`);
+    if (typeof schema.minItems === "number" && value.length < schema.minItems) throw new Error(`${path} 至少需要 ${schema.minItems} 项`);
+    if (typeof schema.maxItems === "number" && value.length > schema.maxItems) throw new Error(`${path} 最多允许 ${schema.maxItems} 项`);
+    value.forEach((item, index) => validateJsonSchema(schema.items as JsonSchema, item, `${path}[${index}]`));
+    return;
+  }
+  if (type === "string" && typeof value !== "string") throw new Error(`${path} 必须是字符串`);
+  if (type === "number" && (typeof value !== "number" || !Number.isFinite(value))) throw new Error(`${path} 必须是数字`);
+  if (type === "integer" && (!Number.isInteger(value))) throw new Error(`${path} 必须是整数`);
+  if (type === "boolean" && typeof value !== "boolean") throw new Error(`${path} 必须是布尔值`);
+  if (Array.isArray(schema.enum) && !schema.enum.includes(value)) throw new Error(`${path} 不在允许值范围内`);
+  if (typeof value === "string") {
+    if (typeof schema.minLength === "number" && value.length < schema.minLength) throw new Error(`${path} 长度不足`);
+    if (typeof schema.maxLength === "number" && value.length > schema.maxLength) throw new Error(`${path} 长度超限`);
+    if (typeof schema.pattern === "string" && !new RegExp(schema.pattern, "u").test(value)) throw new Error(`${path} 格式不符合接口契约`);
+  }
+  if (typeof value === "number") {
+    if (typeof schema.minimum === "number" && value < schema.minimum) throw new Error(`${path} 小于允许值`);
+    if (typeof schema.maximum === "number" && value > schema.maximum) throw new Error(`${path} 大于允许值`);
+  }
+}
+
+export function assertAgentCompletionEvidence(contract: AgentOperationContract, payload: unknown) {
+  if (contract.completionEvidence.type === "response") return;
+  const paths = contract.completionEvidence.responsePaths || [];
+  if (paths.some((path) => pathValue(payload, path) !== undefined && pathValue(payload, path) !== "" && pathValue(payload, path) !== false)) return;
+  throw new Error(`接口返回成功，但缺少完成证据：${contract.completionEvidence.description}`);
+}
+
+function pathValue(value: unknown, path: string): unknown {
+  return path.split(".").reduce<unknown>((current, key) => current && typeof current === "object" ? (current as Record<string, unknown>)[key] : undefined, value);
+}

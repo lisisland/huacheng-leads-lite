@@ -1,0 +1,53 @@
+.env
+.env.*.local
+.data/
+backups/
+*.dump
+*.db
+*.sqlite
+*.sql.gz
+node_modules/
+dist/
+test-results/
+playwright-report/
+*.log
+backend/.wwebjs_auth/
+backend/uploads/
+dist-packages/
+
+# Local build/runtime artifacts and packaged binaries
+.build-windows-portable/
+.runtime-cache/
+.cache/
+.vite/
+coverage/
+*.tsbuildinfo
+*.zip
+*.tar.gz
+*.tgz
+
+# Local browser/session state and generated uploads
+.wwebjs_auth/
+.data/
+*.key
+
+# OS metadata and full database exports
+.DS_Store
+*.full.sql
+
+本地登录信息.txt
+
+.local-runtime/
+
+# Never publish local identities or research records
+.env*
+!.env.example
+*.sqlite3
+*.pem
+*.p12
+*.credentials.json
+本地登录信息.txt
+check-local-login.mjs
+secure-local-admin.ts
+work/
+outputs/
